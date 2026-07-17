@@ -42,7 +42,14 @@ an SSH server.
 
 ## Implementation rules
 
-- Pass subprocess arguments as sequences; never use a shell for dynamic data.
+- Keep executables and options program-controlled. Pass subprocess arguments as
+  sequences, map user choices to allowlisted options, and put validated dynamic
+  operands after `--` when supported. Otherwise use a command-specific safe
+  boundary or reject ambiguous values.
+- Treat each shell, remote command, or interpreter boundary as a new parser. Do
+  not interpolate dynamic data into program text or rely on ad-hoc quoting. If
+  an interpreter is unavoidable, keep its source static and pass values through
+  positional arguments or a controlled environment.
 - Validate and bound every file or external input before use.
 - Keep private material out of exceptions, logs, manifests, and test output.
 - Syntax-check nftables transactions before application and use deterministic

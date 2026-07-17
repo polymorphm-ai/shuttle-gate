@@ -26,8 +26,15 @@ host virtual environment or install project packages on the host.
 Support the minimum Python version declared in `pyproject.toml`. Use four-space
 indentation, complete type annotations, small auditable functions, `snake_case`
 for modules/functions, and `PascalCase` for classes/models. Ruff and strict mypy
-must pass without warnings or errors. Pass subprocess arguments as sequences;
-never use `shell=True` with dynamic data.
+must pass without warnings or errors.
+
+Keep subprocess command structure program-controlled. Pass arguments as
+sequences, map user choices to allowlisted options, and place validated dynamic
+operands after `--` or a command-specific boundary. Treat every shell or
+interpreter boundary as a new parser: avoid interpolated program text and ad-hoc
+quoting. If an interpreter is unavoidable, keep its source static and pass
+values through positional arguments or a controlled environment. Never use
+`shell=True` with dynamic data.
 
 Prefer current, native Linux interfaces and actively maintained components. Do
 not introduce deprecated commands or compatibility layers when a supported
