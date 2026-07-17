@@ -13,11 +13,11 @@ Generated WireGuard key text is validated before it can enter a configuration.
 
 ## Clean host contract
 
-The host needs Docker, Compose, `uv`, and Python 3.14. It does not need a Python
-environment, WireGuard tools, sshuttle, dnsmasq, nftables user tools, or test
-packages. Docker images, containers, networks, and published ports are expected
-Docker-managed effects. Project-local `config.yaml`, `secrets/`, and `state/`
-are intentional persistent data.
+The host needs Docker, Compose, `uv`, and a supported Python version. It does not
+need a Python environment, WireGuard tools, sshuttle, dnsmasq, nftables user
+tools, or test packages. Docker images, containers, networks, and published
+ports are expected Docker-managed effects. Project-local `config.yaml`,
+`secrets/`, and `state/` are intentional persistent data.
 
 The launcher uses an offline, no-cache `uv run --script` shebang with an empty
 dependency list. Application dependency resolution and all quality checks occur

@@ -1,8 +1,8 @@
 # Development Guide
 
 Read `AGENTS.md` before changing code. The main invariants are clean-host
-execution, Python 3.14, native nftables only, strict typing, fail-closed routing,
-and no toolkit changes to the SSH server.
+execution, native nftables only, strict typing, fail-closed routing, and no
+toolkit changes to the SSH server.
 
 ## Layout
 
@@ -25,9 +25,14 @@ small lifecycle supervisor. Keep pure rendering separate from privileged I/O.
 docker compose config --quiet
 ```
 
-`./test` builds the locked Python 3.14 test image and runs Ruff formatting,
-Ruff linting, strict mypy for source/tests and both host scripts, then pytest
-with branch coverage. The current gate is at least 90%.
+`./test` builds the locked test image and runs Ruff formatting, Ruff linting,
+strict mypy for source/tests and both host scripts, then pytest with branch
+coverage. The current gate is at least 90%.
+
+Python 3.14 is the minimum supported version. The container defaults to that
+baseline; set `SG_PYTHON_VERSION` when checking a newer compatible Python image.
+Mypy and Ruff deliberately target the minimum so code does not accidentally
+require a newer interpreter.
 
 `./test --integration` repeats the standard gate, then uses a disposable
 `NET_ADMIN` container. It creates a kernel WireGuard interface, applies IPv4 and
@@ -47,5 +52,5 @@ an SSH server.
 - Do not add a host package, virtual environment, generated cache, hosted CI,
   license, or remote mutation without an explicit design decision.
 
-Dependency updates must keep `requires-python` at Python 3.14, regenerate
-`uv.lock` inside Docker, rebuild, and pass both test modes.
+Dependency updates must preserve the declared minimum Python version, regenerate
+`uv.lock`, rebuild, and pass both test modes.

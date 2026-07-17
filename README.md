@@ -14,7 +14,7 @@ installed, configured, or changed by the toolkit.
 
 - Linux host with kernel WireGuard, nftables TPROXY, and IPv6 support when used
 - Docker Engine with Docker Compose
-- `uv` and an installed Python 3.14 for the dependency-free host launchers
+- `uv` and Python 3.14 or newer for the dependency-free host launchers
 - an SSH account with Python 3.9+ and normal TCP/UDP egress to target networks
 - a phone that can reach one exact laptop address on the configured UDP port
 

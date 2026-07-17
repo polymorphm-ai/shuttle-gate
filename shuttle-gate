@@ -1,6 +1,6 @@
 #!/usr/bin/env -S uv run --script --no-project --no-managed-python --no-python-downloads --no-cache --offline
 # /// script
-# requires-python = ">=3.14,<3.15"
+# requires-python = ">=3.14"
 # dependencies = []
 # ///
 """Clean host-side launcher for shuttle-gate.

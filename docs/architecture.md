@@ -20,9 +20,9 @@ gateway container network namespace
                          target network service
 ```
 
-The host launcher is a dependency-free Python 3.14 script. It validates local
-launch metadata and calls Docker Compose. Pydantic, YAML, WireGuard tools,
-sshuttle, dnsmasq, nft, tests, Ruff, and mypy stay inside Docker images.
+The host launcher is a dependency-free Python script. It validates local launch
+metadata and calls Docker Compose. Pydantic, YAML, WireGuard tools, sshuttle,
+dnsmasq, nft, tests, Ruff, and mypy stay inside Docker images.
 
 The static Compose file defines separate roles:
 
