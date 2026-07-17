@@ -29,10 +29,13 @@ for modules/functions, and `PascalCase` for classes/models. Ruff and strict mypy
 must pass without warnings or errors. Pass subprocess arguments as sequences;
 never use `shell=True` with dynamic data.
 
-Use native nftables only. Do not add legacy firewall commands or models. Name
-pytest files `test_<area>.py` and tests `test_<behavior>`. Unit tests must not
-need privileges or network access; inject external command execution. Maintain
-at least 90% coverage and keep privileged tests opt-in. See
+Prefer current, native Linux interfaces and actively maintained components. Do
+not introduce deprecated commands or compatibility layers when a supported
+native interface exists. Treat changes to security-critical networking backends
+as design changes: update the architecture, security guidance, and integration
+coverage. Name pytest files `test_<area>.py` and tests `test_<behavior>`. Unit
+tests must not need privileges or network access; inject external command
+execution. Maintain at least 90% coverage and keep privileged tests opt-in. See
 `docs/development.md` for the detailed test and implementation rules.
 
 ## Security and Changes

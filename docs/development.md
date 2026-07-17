@@ -1,8 +1,8 @@
 # Development Guide
 
 Read `AGENTS.md` before changing code. The main invariants are clean-host
-execution, native nftables only, strict typing, fail-closed routing, and no
-toolkit changes to the SSH server.
+execution, current native Linux interfaces, strict typing, fail-closed routing,
+and no toolkit changes to the SSH server.
 
 ## Layout
 
