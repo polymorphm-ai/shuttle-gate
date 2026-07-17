@@ -10,6 +10,7 @@ the SSH server.
 - `shuttle-gate` plus `shuttle-gate.lock`: production PEP 723 entry point
 - `test` plus `test.lock`: quality-tool and test entry point
 - `src/shuttle_gate/`: typed host control plane and sandbox runtime
+- `src/shuttle_gate/claim.py`: immutable host UDP-claim supervisor
 - `tests/unit/`: unprivileged injected/fake tests
 - `tests/integration/`: real kernel and namespace tests
 - `Dockerfile`, `docker-compose.yml`: Docker integration tests only
@@ -41,10 +42,12 @@ uv directly and needs no Docker. Tool caches and coverage data use a temporary
 directory, so the quality gate leaves no project-local development artifacts.
 
 `./test --integration` first repeats that gate. It then creates a short-lived
-transient user service and exercises real pasta/bubblewrap isolation plus
-WireGuard, IPv4/IPv6 policy routing, and native nftables. Finally it runs the
-kernel tests in a disposable Compose service with fixed `0:0` IDs and
-`NET_ADMIN`. It never contacts an SSH server.
+transient user service, verifies the immutable socket-claim supervisor, runs
+concurrent pasta/bubblewrap instances from unusual printable paths, proves a
+duplicate UDP tuple fails without disturbing them, and exercises WireGuard,
+IPv4/IPv6 policy routing, and native nftables. Finally it runs the kernel tests
+in a disposable Compose service with fixed `0:0` IDs and `NET_ADMIN`. It never
+contacts an SSH server.
 
 ## Interruption-safe state changes
 
@@ -91,5 +94,8 @@ final boundary.
   material out of errors, logs, manifests, and test output.
 - Preserve exact bind-address exposure, read-only mounts, native nftables
   syntax checks, deterministic owned names, and manual-only remote setup.
-- Test IPv4 and IPv6, failure rollback, permissions, stale state, redaction,
-  retries, and postcondition verification.
+- Keep application and instance roots distinct in APIs. Derive unit, runtime,
+  locks, and state identity only from the canonical instance path.
+- Test IPv4 and IPv6, printable unusual paths, control-character rejection,
+  concurrent instances, socket conflicts, failure rollback, permissions, stale
+  state, redaction, retries, and postcondition verification.

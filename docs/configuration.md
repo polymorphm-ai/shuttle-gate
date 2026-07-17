@@ -8,8 +8,10 @@ normalized before any namespace is started.
 - `version`: must be `1`.
 - `project`: lowercase logical instance name using letters, digits, and hyphens.
 
-The repository's absolute path, not `project`, identifies its transient systemd
-unit and XDG runtime directory. This prevents two checkouts from colliding.
+The canonical instance-directory path, not `project` or the application path,
+identifies its transient systemd unit and XDG runtime directory. Symlink aliases
+therefore select the same instance. Use `--instance PATH` before the command;
+without it, the application checkout is the instance directory.
 
 ## `wireguard`
 
@@ -35,13 +37,15 @@ Removing a YAML peer does not immediately remove secret state. Review and run:
 ## `ssh`
 
 - `host`, `user`, and `port`: SSH destination.
-- `identity_file`: project-relative private key below `secrets/`.
-- `known_hosts_file`: project-relative verified host-key file below `secrets/`.
+- `identity_file`: instance-relative private key below `secrets/`.
+- `known_hosts_file`: instance-relative verified host-key file below `secrets/`.
 - `remote_python`: safe executable name or absolute path, without arguments.
 - timeout and keepalive fields: bounded SSH failure detection.
 
 Authentication is batch-only and public-key-only, with `IdentitiesOnly=yes` and
 strict host-key checking. Interactive password mechanisms are disabled.
+Secret paths may contain unusual printable filename characters, but control
+characters are rejected so commands and diagnostics remain unambiguous.
 
 ## `routing`
 

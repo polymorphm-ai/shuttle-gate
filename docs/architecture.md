@@ -21,14 +21,26 @@ bubblewrap runtime sandbox
 ```
 
 `./shuttle-gate` is a locked PEP 723 script. uv supplies Python and application
-packages from its user cache. The launcher validates host inputs, creates an
-immutable application zip and launch manifest below `XDG_RUNTIME_DIR`, and asks
-the systemd user manager to start one transient service.
+packages from its user cache. The application root contains code and the
+configuration template; the canonical instance root contains `config.yaml`,
+`secrets/`, `state/`, and `exports/`. `--instance PATH` separates them, while
+omitting it preserves the colocated layout. The instance path hashes to its
+transient unit and XDG runtime names.
 
-Short-lived operator commands also run in bubblewrap. Their project mount keeps
-the checkout's absolute host pathname, so paths printed for later manual use
-remain valid after the sandbox exits. Parent directories at that pathname are
-namespace-only scaffolding; no other host content below them is exposed.
+The launcher validates host inputs, creates an immutable application zip and
+launch manifest below `XDG_RUNTIME_DIR`, and asks the systemd user manager to
+start one transient service. It first probes every exact UDP socket without
+address reuse, detecting an existing non-toolkit listener. An immutable
+supervisor then locks every tuple through deterministic session-local claim
+files and starts pasta. It holds all claims until pasta exits. Ordered
+non-blocking locks allow independent instances and reject overlap without
+disturbing an existing owner.
+
+Short-lived operator commands also run in bubblewrap. The application is
+mounted read-only; the instance is read-only for `doctor` and writable for local
+management commands. Both retain their absolute host pathnames, so printed
+paths remain valid after the sandbox exits. Parent directories are
+namespace-only scaffolding; sibling host content is not exposed.
 
 `pasta` creates the rootless user/network namespace. ID 0 inside maps to the
 calling user outside; it grants no host root access. Automatic TCP and reverse
@@ -36,7 +48,8 @@ port forwarding are disabled. Only each validated WireGuard UDP address/port is
 forwarded. `bubblewrap` then drops all capabilities except namespace-local
 `CAP_NET_ADMIN` and exposes only system runtime files, the immutable application
 zip, read-only configuration/secrets/state, the exact state lock, and writable
-volatile output. The project tree is not mounted into the service.
+volatile output. Neither the application tree nor the full instance tree is
+mounted into the service.
 
 Production never invokes Docker. Docker Compose exists only for a second,
 disposable integration-test environment.
@@ -46,7 +59,7 @@ disposable integration-test environment.
 WireGuard keys, peer configurations, fingerprints, and operation receipts live
 in immutable directories under `state/generations/`. A writer constructs and
 validates a private staging generation, fsyncs it, renames it, then atomically
-replaces `state/current`. A project `flock` serializes writers. Readers hold a
+replaces `state/current`. An instance `flock` serializes writers. Readers hold a
 shared lock while using the resolved generation.
 
 Non-idempotent rotations publish an operation-ID receipt with their result, so
@@ -57,8 +70,10 @@ The host builds a deterministic application zip and atomically publishes a
 schema-versioned launch manifest. Digests bind the launch ID, systemd unit,
 configuration, credentials, state generation, application bundle, and exact
 bind sockets. The sandbox validates every digest again before changing its
-network namespace. Lifecycle calls use a separate host lock; a valid running
-launch is resumed rather than replaced.
+network namespace. Lifecycle calls use a separate instance lock; a valid running
+launch is resumed rather than replaced. Resumption also compares the active
+bundle digest with current application source, so another code version cannot
+silently take over an active instance.
 
 ## Packet flow
 

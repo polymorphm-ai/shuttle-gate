@@ -15,10 +15,10 @@ results only.
 ## Clean host contract
 
 Production requires only the system tools listed in the README. uv stores its
-managed Python and locked packages in the normal user cache. Intentional project
-state is limited to `config.yaml`, `secrets/`, `state/`, and explicit sensitive
-copies below ignored `exports/`; transient manifests, the immutable code bundle,
-locks, and status live below `XDG_RUNTIME_DIR`.
+managed Python and locked packages in the normal user cache. Intentional
+instance state is limited to `config.yaml`, `secrets/`, `state/`, and explicit
+sensitive copies below ignored `exports/`; transient manifests, the immutable
+code bundle, socket claims, locks, and status live below `XDG_RUNTIME_DIR`.
 
 The toolkit creates no host interface, route, nftables rule, DNS process,
 container, or root-owned file. ID 0 inside the pasta user namespace maps to the
@@ -32,22 +32,28 @@ fixed IDs rather than importing host UID/GID values.
 
 The transient systemd user unit supplies bounded restart and resource policy.
 It retries only exit status 75, reserved for classified transient failures.
+An immutable outer supervisor holds ordered advisory locks for every exact host
+UDP tuple throughout the child lifetime. A conflict is permanent and starts no
+gateway runtime; unrelated instances retain their locks and processes.
 `pasta` creates the private user/network namespace with automatic TCP, reverse
 TCP/UDP, and gateway mappings disabled; only validated WireGuard UDP sockets are
 forwarded from exact host addresses.
 
 Inside that namespace, bubblewrap drops all capabilities and restores only
-namespace-local `CAP_NET_ADMIN`. The project tree is absent. System files,
-configuration, credentials, the state tree, code bundle, and launch manifest
-are read-only. The runtime resolves and locks one immutable state generation.
+namespace-local `CAP_NET_ADMIN`. The application and full instance trees are
+absent. System files, configuration, credentials, the state tree, code bundle,
+and launch manifest are read-only. The runtime resolves and locks one immutable
+state generation.
 Only that exact lock file and a volatile output directory are writable. Digests
 and schema bounds are checked both before service creation and inside the
 sandbox.
 
-Short-lived operator sandboxes expose the project tree at its original absolute
-host path. This makes printed paths truthful without exposing sibling or parent
-host content. Sensitive exports are restricted to one direct file below the
-private `exports/` directory; paths outside it and symbolic links are rejected.
+Short-lived operator sandboxes expose application code read-only and the
+selected instance at their original absolute host paths. This makes printed
+paths truthful without exposing sibling or parent host content. Sensitive
+exports are restricted to one direct file below the private `exports/`
+directory; paths outside it and symbolic links are rejected. Broad, missing,
+overlapping, and control-character instance paths are rejected before mounting.
 
 ## Remote SSH server contract
 

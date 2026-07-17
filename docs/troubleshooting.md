@@ -101,9 +101,18 @@ removes all runtime networking; persistent keys are not deleted. State writers
 reconcile staging directories and publish only through atomic `state/current`.
 Never hand-edit a generation or remove lock files.
 
-Stop the gateway before moving or renaming the repository. The resolved checkout
-path identifies its transient unit and XDG runtime directory; a moved checkout
-is intentionally treated as a separate instance.
+Stop the gateway before moving or renaming its instance directory. The canonical
+instance path identifies its transient unit and XDG runtime directory; a moved
+directory is intentionally a new instance. Moving application source does not
+change instance identity, but `up` refuses to resume an active gateway when its
+current application bundle differs. Run `down` for that instance, then start the
+new code intentionally.
+
+If `up` reports that a host UDP socket is unavailable or already in use, another
+instance or host process owns the same exact address/port tuple. Select another
+bind address or listen port. Do not remove claim files: they are session-local
+under `XDG_RUNTIME_DIR`, and the supervising service holds the actual lock for
+its complete lifetime.
 
 Reuse the printed operation ID when a key command's outcome is unknown. A busy
 state means the gateway or another writer owns the lock; stop it or wait. If

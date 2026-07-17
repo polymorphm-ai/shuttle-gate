@@ -1,7 +1,18 @@
 # Quick Start
 
-Install the [runtime requirements](../README.md#runtime-requirements), then run
-commands from the repository root.
+Install the [runtime requirements](../README.md#runtime-requirements). Commands
+without `--instance` use the application checkout as the instance directory.
+For separate state, create a dedicated directory and put the global option
+before every command:
+
+```console
+mkdir -m 700 -- /home/me/shuttle-gate-office
+cd -- /home/me/shuttle-gate-office
+/path/to/shuttle-gate --instance . init
+```
+
+The remaining examples use the colocated default; for the separate layout,
+replace `./shuttle-gate` with `/path/to/shuttle-gate --instance .`.
 
 ## 1. Prepare the local instance
 
@@ -20,6 +31,12 @@ configuration:
 - choose one routed DNS upstream, or disable DNS.
 
 See [Configuration](configuration.md) for all fields.
+
+Instance paths are canonicalized, so symlink aliases select the same instance.
+Spaces, Unicode, shell punctuation, and components beginning with whitespace or
+`-` are supported. Quote such paths in the calling shell. Control characters,
+missing directories, `/`, the user's home directory, and paths overlapping a
+separate application checkout are rejected.
 
 ## 2. Prepare SSH authentication
 
@@ -84,6 +101,11 @@ remote action is a bounded version check; it writes no remote file.
 socket through pasta; all gateway networking stays in its rootless namespace.
 The phone still needs firewall/NAT permission to reach that socket. The toolkit
 does not modify host firewall policy.
+
+Different instances have independent units, locks, state, namespaces, and
+credentials. Their inner addresses may repeat, but their exact host
+address/UDP-port tuples must not. A lifetime lock rejects duplicate tuples
+before starting pasta and leaves existing instances running.
 
 ## 5. Operate and stop
 

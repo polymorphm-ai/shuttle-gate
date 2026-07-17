@@ -57,6 +57,24 @@ private key material; use a trusted transfer channel and delete extra copies.
 Stop with `./shuttle-gate down`; inspect the systemd journal with
 `./shuttle-gate logs`.
 
+## Separate instances
+
+One application checkout can serve independent configuration directories. The
+directory must already exist; put the global option before the command:
+
+```console
+mkdir -m 700 -- /home/me/shuttle-gate-office
+cd -- /home/me/shuttle-gate-office
+/path/to/shuttle-gate --instance . init
+/path/to/shuttle-gate --instance . status
+```
+
+Without `--instance`, the checkout remains the instance directory for backward
+compatibility. A canonical instance path identifies its state, lock, transient
+systemd unit, and XDG runtime directory. Instances may run together when every
+host address/UDP-port tuple is distinct; a duplicate tuple fails closed without
+disturbing the running owner.
+
 The service belongs to the current user manager and normally stops with that
 manager. The toolkit never enables lingering. If operation after logout is
 required, the operator may explicitly run `loginctl enable-linger "$USER"`
