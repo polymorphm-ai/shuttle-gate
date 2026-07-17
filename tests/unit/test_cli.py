@@ -5,7 +5,6 @@ from pathlib import Path
 
 import pytest
 import yaml
-from typer import Exit
 from typer.testing import CliRunner
 
 import shuttle_gate.cli as cli
@@ -166,8 +165,10 @@ def test_doctor_runtime_health_status_and_version_adapters(
 
 def test_main_turns_application_errors_into_stable_cli_errors(
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     monkeypatch.setattr(cli, "app", lambda: (_ for _ in ()).throw(ShuttleGateError("bad")))
-    with pytest.raises(Exit) as raised:
+    with pytest.raises(SystemExit) as raised:
         cli.main()
-    assert raised.value.exit_code == 2
+    assert raised.value.code == 2
+    assert capsys.readouterr().err == "shuttle-gate error: bad\n"

@@ -277,7 +277,8 @@ def main() -> None:
     try:
         app()
     except ShuttleGateError as exc:
-        abort(str(exc))
+        typer.echo(f"shuttle-gate error: {exc}", err=True)
+        raise SystemExit(2) from None
 
 
 if __name__ == "__main__":
