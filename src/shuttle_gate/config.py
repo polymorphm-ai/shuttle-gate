@@ -26,7 +26,8 @@ MAX_CONFIG_BYTES = 1024 * 1024
 PROJECT_PATTERN = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
 PEER_PATTERN = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
 USER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,63}$")
-PYTHON_PATTERN = re.compile(r"^[A-Za-z0-9_./+-]{1,255}$")
+PYTHON_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.+-]{0,254}$")
+PYTHON_PATH_PATTERN = re.compile(r"^/[A-Za-z0-9_./+-]{1,254}$")
 HOST_LABEL_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
 MULTICAST_NETWORKS = (ip_network("224.0.0.0/4"), ip_network("ff00::/8"))
 
@@ -181,7 +182,14 @@ class SSHConfig(StrictModel):
     @field_validator("remote_python")
     @classmethod
     def validate_remote_python(cls, value: str) -> str:
-        if not PYTHON_PATTERN.fullmatch(value) or ".." in Path(value).parts:
+        safe_name = PYTHON_NAME_PATTERN.fullmatch(value) is not None
+        path_parts = value.split("/")[1:]
+        safe_absolute_path = (
+            PYTHON_PATH_PATTERN.fullmatch(value) is not None
+            and bool(path_parts)
+            and all(part not in {"", ".", ".."} for part in path_parts)
+        )
+        if not safe_name and not safe_absolute_path:
             raise ValueError("must be a safe executable name or absolute path without arguments")
         return value
 

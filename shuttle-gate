@@ -25,6 +25,20 @@ COMPOSE_FILE = ROOT / "docker-compose.yml"
 STATE_DIR = ROOT / "state"
 LAUNCH_MANIFEST = STATE_DIR / "runtime" / "launch.json"
 PROJECT_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
+LOG_FLAG_OPTIONS = {
+    "-f": "--follow",
+    "--follow": "--follow",
+    "-t": "--timestamps",
+    "--timestamps": "--timestamps",
+    "--no-color": "--no-color",
+    "--no-log-prefix": "--no-log-prefix",
+}
+LOG_TAIL_OPTIONS = frozenset({"-n", "--tail"})
+MAX_LOG_TAIL_LINES = 1_000_000
+LOGS_USAGE = (
+    "usage: ./shuttle-gate logs "
+    "[--follow] [--timestamps] [--no-color] [--no-log-prefix] [--tail LINES|all]"
+)
 
 
 class LauncherError(Exception):
@@ -140,10 +154,39 @@ def _down(arguments: list[str]) -> int:
     return _run([*_runtime_compose_prefix(), "down", "--remove-orphans"]).returncode
 
 
+def _validated_log_tail(value: str) -> str:
+    if value == "all":
+        return value
+    if not value.isascii() or not value.isdecimal():
+        raise LauncherError(LOGS_USAGE)
+    if len(value) > len(str(MAX_LOG_TAIL_LINES)) or int(value) > MAX_LOG_TAIL_LINES:
+        raise LauncherError(f"log tail exceeds {MAX_LOG_TAIL_LINES} lines")
+    return value
+
+
+def _logs_command(compose_prefix: list[str], arguments: list[str]) -> list[str]:
+    options: list[str] = []
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        mapped = LOG_FLAG_OPTIONS.get(argument)
+        if mapped is not None:
+            options.append(mapped)
+        elif argument in LOG_TAIL_OPTIONS:
+            index += 1
+            if index >= len(arguments):
+                raise LauncherError(LOGS_USAGE)
+            options.append(f"--tail={_validated_log_tail(arguments[index])}")
+        elif argument.startswith("--tail="):
+            options.append(f"--tail={_validated_log_tail(argument.removeprefix('--tail='))}")
+        else:
+            raise LauncherError(LOGS_USAGE)
+        index += 1
+    return [*compose_prefix, "logs", *options, "--", "gateway"]
+
+
 def _logs(arguments: list[str]) -> int:
-    command = [*_runtime_compose_prefix(), "logs"]
-    command.extend(arguments)
-    return _run(command).returncode
+    return _run(_logs_command(_runtime_compose_prefix(), arguments)).returncode
 
 
 def _status(arguments: list[str]) -> int:
@@ -188,7 +231,7 @@ Commands:
   up [--no-build]         Start the gateway and wait until it is ready
   down                    Stop the gateway cleanly
   status [--json]         Show gateway and peer status
-  logs [COMPOSE OPTIONS]  Show gateway logs
+  logs [OPTIONS]          Show gateway logs (use logs --help for supported options)
   version                 Print the project version
 """
     )
@@ -206,6 +249,9 @@ def main() -> int:
     if command == "down":
         return _down(rest)
     if command == "logs":
+        if rest in (["-h"], ["--help"]):
+            print(LOGS_USAGE)
+            return 0
         return _logs(rest)
     if command == "status":
         return _status(rest)

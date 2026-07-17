@@ -32,6 +32,7 @@ PUBLIC_KEY = "public.key"
 PRESHARED_KEY = "preshared.key"
 PHONE_CONFIG = "phone.conf"
 FINGERPRINT = "fingerprint.json"
+KEYSCAN_SCRIPT = 'exec ssh-keyscan -p "$1" -- "$2" > "$3"'
 
 
 @dataclass(frozen=True)
@@ -305,13 +306,19 @@ def ssh_setup_instructions(config: ProjectConfig, paths: InstancePaths) -> str:
         raise StateError("SSH public key is missing; run './shuttle-gate ssh-key generate'")
     destination = f"{config.ssh.user}@{config.ssh.host}"
     copy_command = shlex.join(
-        ["ssh-copy-id", "-i", str(public), "-p", str(config.ssh.port), destination]
+        ["ssh-copy-id", "-i", str(public), "-p", str(config.ssh.port), "--", destination]
     )
     known_hosts = resolve_config_path(paths.config, config.ssh.known_hosts_file)
-    scan_command = (
-        shlex.join(["ssh-keyscan", "-p", str(config.ssh.port), config.ssh.host])
-        + " > "
-        + shlex.quote(str(known_hosts))
+    scan_command = shlex.join(
+        [
+            "sh",
+            "-c",
+            KEYSCAN_SCRIPT,
+            "shuttle-gate-keyscan",
+            str(config.ssh.port),
+            config.ssh.host,
+            str(known_hosts),
+        ]
     )
     return (
         "Run this command yourself to authorize the dedicated key:\n"

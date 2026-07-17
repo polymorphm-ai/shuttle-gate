@@ -34,6 +34,8 @@ STATUS_FILE = "status.json"
 NOTIFY_FILE = "sshuttle-notify.sock"
 PROCESS_STOP_SECONDS = 10.0
 MULTICAST_EXCLUSIONS = ("224.0.0.0/4", "255.255.255.255/32", "ff00::/8")
+REMOTE_PYTHON_CHECK_CODE = "import sys;raise SystemExit(0 if sys.version_info>=(3,9) else 3)"
+REMOTE_PYTHON_CHECK_SCRIPT = 'exec "$1" -B -c "$2"'
 
 
 def runtime_paths() -> tuple[Path, InstancePaths, Path]:
@@ -109,10 +111,18 @@ def sshuttle_target(config: ProjectConfig) -> str:
 def remote_python_check(config: ProjectConfig, runner: Runner) -> None:
     """Verify authentication and Python without writing remote state."""
 
-    code = "import sys;raise SystemExit(0 if sys.version_info>=(3,9) else 3)"
-    remote_command = shlex.join([config.ssh.remote_python, "-B", "-c", code])
+    remote_command = shlex.join(
+        [
+            "sh",
+            "-c",
+            REMOTE_PYTHON_CHECK_SCRIPT,
+            "shuttle-gate-python-check",
+            config.ssh.remote_python,
+            REMOTE_PYTHON_CHECK_CODE,
+        ]
+    )
     runner.run(
-        [*ssh_arguments(config), ssh_target(config), "--", remote_command],
+        [*ssh_arguments(config), "--", ssh_target(config), remote_command],
         timeout=float(config.ssh.connect_timeout_seconds + 10),
     )
 

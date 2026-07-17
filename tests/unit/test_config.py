@@ -133,6 +133,9 @@ def test_load_config_reports_invalid_documents(tmp_path: Path, content: str) -> 
         (("wireguard", "peers"), [], "peers must not be empty"),
         (("ssh", "user"), "bad user", "unsupported"),
         (("ssh", "remote_python"), "python3 -x", "safe executable"),
+        (("ssh", "remote_python"), "--help", "safe executable"),
+        (("ssh", "remote_python"), "relative/python3", "safe executable"),
+        (("ssh", "remote_python"), "/opt//python3", "safe executable"),
         (("ssh", "identity_file"), "../outside", "project-relative"),
         (("ssh", "known_hosts_file"), "other/known_hosts", "below the project secrets"),
         (("routing", "networks"), [], "at least one"),
@@ -154,6 +157,14 @@ def test_validation_matrix_rejects_ambiguous_or_unsafe_values(
 
     with pytest.raises(ValueError, match=message):
         ProjectConfig.model_validate(data)
+
+
+@pytest.mark.parametrize("remote_python", ["python3", "python3.14", "/opt/python/bin/python3"])
+def test_accepts_unambiguous_remote_python(remote_python: str) -> None:
+    data = config_data()
+    data["ssh"]["remote_python"] = remote_python
+
+    assert ProjectConfig.model_validate(data).ssh.remote_python == remote_python
 
 
 def test_rejects_duplicate_peer_name_missing_family_and_non_unicast_endpoints() -> None:

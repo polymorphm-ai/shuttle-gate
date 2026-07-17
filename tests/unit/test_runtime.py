@@ -18,6 +18,8 @@ from shuttle_gate.files import InstancePaths, atomic_write_json
 from shuttle_gate.keys import generate_missing_keys
 from shuttle_gate.runner import CommandResult
 from shuttle_gate.runtime import (
+    REMOTE_PYTHON_CHECK_CODE,
+    REMOTE_PYTHON_CHECK_SCRIPT,
     GatewayRuntime,
     _stop_process,
     dnsmasq_arguments,
@@ -86,8 +88,17 @@ def test_remote_python_check_is_bounded_and_read_only(config: ProjectConfig) -> 
 
     command = runner.calls[0][0]
     assert command[0] == "ssh"
-    assert "python3 -B -c" in command[-1]
+    assert command[-3:-1] == ("--", "tester@ssh.example.test")
     remote_tokens = shlex.split(command[-1])
+    assert remote_tokens == [
+        "sh",
+        "-c",
+        REMOTE_PYTHON_CHECK_SCRIPT,
+        "shuttle-gate-python-check",
+        "python3",
+        REMOTE_PYTHON_CHECK_CODE,
+    ]
+    assert "python3" not in REMOTE_PYTHON_CHECK_SCRIPT
     assert not {"touch", ">", "tee", "install"}.intersection(remote_tokens)
 
 
