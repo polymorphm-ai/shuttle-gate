@@ -1,0 +1,50 @@
+version: 1
+project: shuttle-gate
+
+wireguard:
+  bind_addresses:
+    - 192.168.1.42
+    - "2001:db8:10::42"
+  endpoint_host: gate.example.com
+  listen_port: 51820
+  gateway_addresses:
+    - 10.77.0.1/24
+    - "fd77::1/64"
+  mtu: 1420
+  peers:
+    - name: phone
+      addresses:
+        - 10.77.0.2/32
+        - "fd77::2/128"
+      persistent_keepalive_seconds: 25
+    - name: tablet
+      addresses:
+        - 10.77.0.3/32
+        - "fd77::3/128"
+      persistent_keepalive_seconds: 25
+
+ssh:
+  host: ssh-server.example.com
+  user: myuser
+  port: 22
+  identity_file: secrets/id_ed25519
+  known_hosts_file: secrets/known_hosts
+  remote_python: python3
+  connect_timeout_seconds: 10
+  server_alive_interval_seconds: 15
+  server_alive_count_max: 3
+
+routing:
+  mode: selected
+  networks:
+    - 10.0.0.0/8
+    - "fd20:1234::/48"
+
+dns:
+  enabled: true
+  upstream: "fd20:1234::53"
+
+backend:
+  mode: sshuttle
+  method: nft-tproxy
+  startup_timeout_seconds: 45

@@ -1,0 +1,96 @@
+#!/usr/bin/env -S uv run --script --no-project --no-managed-python --no-python-downloads --no-cache --offline
+# /// script
+# requires-python = ">=3.14,<3.15"
+# dependencies = []
+# ///
+"""Run every shuttle-gate quality tool inside Docker."""
+
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+COMPOSE_FILE = ROOT / "docker-compose.yml"
+
+
+def _environment() -> dict[str, str]:
+    environment = os.environ.copy()
+    environment.update(
+        {"SG_ROOT": str(ROOT), "SG_UID": str(os.getuid()), "SG_GID": str(os.getgid())}
+    )
+    return environment
+
+
+def _compose(*arguments: str) -> int:
+    command = [
+        "docker",
+        "compose",
+        "--project-directory",
+        str(ROOT),
+        "-f",
+        str(COMPOSE_FILE),
+        *arguments,
+    ]
+    return subprocess.run(command, check=False, env=_environment()).returncode
+
+
+def _tool(entrypoint: str, *arguments: str, service: str = "test") -> int:
+    return _compose(
+        "run",
+        "--rm",
+        "--no-deps",
+        "--no-TTY",
+        "--entrypoint",
+        entrypoint,
+        service,
+        *arguments,
+    )
+
+
+def main() -> int:
+    if shutil.which("docker") is None:
+        print("shuttle-gate test error: Docker was not found", file=sys.stderr)
+        return 2
+    if sys.argv[1:] not in ([], ["--integration"]):
+        print("usage: ./test [--integration]", file=sys.stderr)
+        return 2
+    if _compose("build", "test") != 0:
+        return 1
+    if _compose("config", "--quiet") != 0:
+        return 1
+    checks = (
+        ("ruff", "format", "--check", "src", "tests", "shuttle-gate", "test"),
+        ("ruff", "check", "src", "tests", "shuttle-gate", "test"),
+        ("mypy", "src", "tests"),
+        ("mypy", "--strict", "shuttle-gate"),
+        ("mypy", "--strict", "test"),
+        (
+            "pytest",
+            "tests/unit",
+            "--cov=shuttle_gate",
+            "--cov-report=term-missing",
+            "--cov-fail-under=90",
+        ),
+    )
+    for check in checks:
+        if _tool(*check) != 0:
+            return 1
+    if sys.argv[1:] == ["--integration"]:
+        if _compose("build", "integration-test") != 0:
+            return 1
+        return _tool(
+            "pytest",
+            "-m",
+            "integration",
+            "tests/integration",
+            service="integration-test",
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

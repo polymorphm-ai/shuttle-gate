@@ -1,0 +1,224 @@
+#!/usr/bin/env -S uv run --script --no-project --no-managed-python --no-python-downloads --no-cache --offline
+# /// script
+# requires-python = ">=3.14,<3.15"
+# dependencies = []
+# ///
+"""Clean host-side launcher for shuttle-gate.
+
+This file intentionally uses only the Python standard library. Every operation
+that needs project or networking dependencies runs in Docker.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+from typing import NoReturn
+
+ROOT = Path(__file__).resolve().parent
+COMPOSE_FILE = ROOT / "docker-compose.yml"
+STATE_DIR = ROOT / "state"
+LAUNCH_MANIFEST = STATE_DIR / "runtime" / "launch.json"
+PROJECT_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
+
+
+class LauncherError(Exception):
+    """A user-visible host launcher failure."""
+
+
+def _fail(message: str, exit_code: int = 2) -> NoReturn:
+    print(f"shuttle-gate error: {message}", file=sys.stderr)
+    raise SystemExit(exit_code)
+
+
+def _base_environment() -> dict[str, str]:
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "SG_ROOT": str(ROOT),
+            "SG_UID": str(os.getuid()),
+            "SG_GID": str(os.getgid()),
+        }
+    )
+    return environment
+
+
+def _compose_prefix() -> list[str]:
+    if shutil.which("docker") is None:
+        raise LauncherError("Docker is required but the docker command was not found")
+    return ["docker", "compose", "--project-directory", str(ROOT), "-f", str(COMPOSE_FILE)]
+
+
+def _runtime_compose_prefix() -> list[str]:
+    prefix = _compose_prefix()
+    project = "shuttle-gate"
+    override: Path | None = None
+    if LAUNCH_MANIFEST.is_file():
+        try:
+            raw = json.loads(LAUNCH_MANIFEST.read_text(encoding="utf-8"))
+            if not isinstance(raw, dict):
+                raise ValueError("manifest is not an object")
+            candidate = raw.get("project")
+            override_value = raw.get("compose_override")
+            if not isinstance(candidate, str) or PROJECT_PATTERN.fullmatch(candidate) is None:
+                raise ValueError("invalid project name")
+            if not isinstance(override_value, str):
+                raise ValueError("invalid override path")
+            override = (ROOT / override_value).resolve()
+            override.relative_to(ROOT)
+            project = candidate
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            raise LauncherError(f"cannot read {LAUNCH_MANIFEST}: {exc}") from exc
+    prefix.extend(["--project-name", project])
+    if override is not None:
+        if not override.is_file():
+            raise LauncherError(f"generated Compose override is missing: {override}")
+        prefix.extend(["-f", str(override)])
+    return prefix
+
+
+def _run(command: list[str], *, capture: bool = False) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            command,
+            check=False,
+            env=_base_environment(),
+            text=True,
+            capture_output=capture,
+        )
+    except OSError as exc:
+        raise LauncherError(f"cannot execute {command[0]}: {exc}") from exc
+
+
+def _ensure_image(service: str) -> None:
+    result = _run([*_compose_prefix(), "build", service])
+    if result.returncode != 0:
+        raise LauncherError(f"failed to build the {service} container")
+
+
+def _run_tool(arguments: list[str], *, service: str = "tool") -> int:
+    _ensure_image(service)
+    result = _run(
+        [
+            *_compose_prefix(),
+            "run",
+            "--rm",
+            "--no-deps",
+            "--no-TTY",
+            service,
+            *arguments,
+        ]
+    )
+    return result.returncode
+
+
+def _up(arguments: list[str]) -> int:
+    no_build = False
+    if arguments == ["--no-build"]:
+        no_build = True
+    elif arguments:
+        raise LauncherError("usage: ./shuttle-gate up [--no-build]")
+
+    prepare_code = _run_tool(["prepare"])
+    if prepare_code != 0:
+        return prepare_code
+
+    command = [*_runtime_compose_prefix(), "up", "--detach", "--wait", "--wait-timeout", "60"]
+    if not no_build:
+        command.append("--build")
+    return _run(command).returncode
+
+
+def _down(arguments: list[str]) -> int:
+    if arguments:
+        raise LauncherError("usage: ./shuttle-gate down")
+    return _run([*_runtime_compose_prefix(), "down", "--remove-orphans"]).returncode
+
+
+def _logs(arguments: list[str]) -> int:
+    command = [*_runtime_compose_prefix(), "logs"]
+    command.extend(arguments)
+    return _run(command).returncode
+
+
+def _status(arguments: list[str]) -> int:
+    if arguments not in ([], ["--json"]):
+        raise LauncherError("usage: ./shuttle-gate status [--json]")
+    ps = _run([*_runtime_compose_prefix(), "ps", "--status", "running", "--quiet"], capture=True)
+    if ps.returncode != 0:
+        return ps.returncode
+    if not ps.stdout.strip():
+        if arguments == ["--json"]:
+            print('{"schema_version":1,"state":"stopped"}')
+        else:
+            print("shuttle-gate is stopped")
+        return 1
+    return _run(
+        [
+            *_runtime_compose_prefix(),
+            "exec",
+            "--no-TTY",
+            "gateway",
+            "python",
+            "-m",
+            "shuttle_gate",
+            "runtime-status",
+            *arguments,
+        ]
+    ).returncode
+
+
+def _print_help() -> None:
+    print(
+        """usage: ./shuttle-gate COMMAND [OPTIONS]
+
+Commands:
+  init                    Create local configuration and protected directories
+  doctor                  Check host, Docker, kernel, SSH, and remote Python
+  config validate         Validate config.yaml
+  keys ...                Generate, rotate, or prune WireGuard keys
+  peers list              List configured peers and generated state
+  ssh-key ...             Generate a dedicated key or print setup instructions
+  phone-config NAME       Generate one mobile WireGuard configuration
+  up [--no-build]         Start the gateway and wait until it is ready
+  down                    Stop the gateway cleanly
+  status [--json]         Show gateway and peer status
+  logs [COMPOSE OPTIONS]  Show gateway logs
+  version                 Print the project version
+"""
+    )
+
+
+def main() -> int:
+    arguments = sys.argv[1:]
+    if not arguments or arguments[0] in {"-h", "--help"}:
+        _print_help()
+        return 0
+
+    command, rest = arguments[0], arguments[1:]
+    if command == "up":
+        return _up(rest)
+    if command == "down":
+        return _down(rest)
+    if command == "logs":
+        return _logs(rest)
+    if command == "status":
+        return _status(rest)
+    if command == "doctor":
+        return _run_tool(["doctor", *rest], service="doctor")
+    if command == "version":
+        print((ROOT / "VERSION").read_text(encoding="utf-8").strip())
+        return 0
+    return _run_tool(arguments)
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except LauncherError as error:
+        _fail(str(error))
