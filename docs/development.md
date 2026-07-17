@@ -1,8 +1,8 @@
 # Development Guide
 
 Read `AGENTS.md` before changing code. The main invariants are clean-host
-execution, current native Linux interfaces, strict typing, fail-closed routing,
-and no toolkit changes to the SSH server.
+execution, current native Linux interfaces, strict typing, interruption-safe
+state transitions, fail-closed routing, and no toolkit changes to the SSH server.
 
 ## Layout
 
@@ -39,6 +39,26 @@ require a newer interpreter.
 IPv6 policy routes, generates/loads a real WireGuard configuration, installs
 real native nftables TPROXY tables, and removes all objects. It does not contact
 an SSH server.
+
+## Interruption-safe state changes
+
+Assume termination, timeout, power loss, or dependency failure between any two
+steps. Structure mutations as prepare, apply, verify, and publish phases. Do all
+validation before the first effect and never report success until durable state
+and external postconditions agree.
+
+- Prefer atomic primitives such as temporary files plus atomic replacement.
+- When one transaction cannot cover every effect, make each step idempotent and
+  make partial progress detectable. A retry, resume, or cleanup must converge on
+  the desired state or a known fail-closed state.
+- Use deterministic ownership markers for files, processes, containers, and
+  kernel resources. Serialize operations that could mutate the same state.
+- Perform irreversible effects last. Rollback is defense in depth; recovery
+  must remain safe when rollback itself is interrupted.
+- Retry automatically only for classified transient failures, with explicit
+  limits and backoff. Unknown outcomes must be safe to reconcile before retry.
+- Inject failure at every meaningful step boundary and test restart, retry,
+  cleanup, and postcondition verification.
 
 ## Implementation rules
 
