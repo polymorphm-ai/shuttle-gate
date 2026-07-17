@@ -214,10 +214,13 @@ def bubblewrap_command(
 
     if not command:
         raise ValueError("sandbox command must not be empty")
+    operator_root = root.resolve()
     mounts = [*_system_mounts(), *_python_mounts()]
     project_mode = "--ro-bind" if project_read_only else "--bind"
     if runtime is None:
-        mounts.append((root.resolve(), Path("/workspace")))
+        # Keep the project at its host pathname. Operator commands print paths
+        # for the user, so an artificial mount point would leak unusable names.
+        mounts.append((operator_root, operator_root))
     else:
         mounts.extend(
             [
@@ -268,7 +271,7 @@ def bubblewrap_command(
 
     for source, destination in mounts:
         mode = "--ro-bind"
-        if destination == Path("/workspace"):
+        if runtime is None and source == operator_root and destination == operator_root:
             mode = project_mode
         elif runtime is not None and destination == Path("/run/shuttle-gate/output"):
             mode = "--bind"
@@ -278,7 +281,10 @@ def bubblewrap_command(
         lock = root / "state" / ".state.lock"
         arguments.extend(["--bind", str(lock), "/state/.state.lock"])
 
-    python_path = "/opt/shuttle-gate/application.pyz" if runtime is not None else "/workspace/src"
+    python_path = (
+        "/opt/shuttle-gate/application.pyz" if runtime is not None else str(operator_root / "src")
+    )
+    application_root = "/workspace" if runtime is not None else str(operator_root)
     arguments.extend(
         [
             "--clearenv",
@@ -302,7 +308,7 @@ def bubblewrap_command(
             python_path,
             "--setenv",
             "SHUTTLE_GATE_ROOT",
-            "/workspace",
+            application_root,
         ]
     )
     if runtime is not None:
@@ -325,7 +331,7 @@ def bubblewrap_command(
                 "/opt/shuttle-gate/application.pyz",
             ]
         )
-    working_directory = "/workspace" if runtime is None else "/"
+    working_directory = str(operator_root) if runtime is None else "/"
     arguments.extend(["--chdir", working_directory, "--", *command])
     return arguments
 

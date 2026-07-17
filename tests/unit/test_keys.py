@@ -159,6 +159,8 @@ def test_generate_ssh_key_and_print_only_manual_instruction(
         "shuttle-gate-keyscan",
     ]
     assert scan_arguments[4:6] == ["2222", "ssh.example.test"]
+    assert copy_arguments[2] == str(instance.secrets / "id_ed25519.pub")
+    assert scan_arguments[6] == str(instance.secrets / "known_hosts")
     assert "ssh.example.test" not in scan_arguments[2]
     with pytest.raises(StateError, match="already exists"):
         generate_ssh_key(config, instance, FakeRunner(), force=False, operation_id="ssh-generate-2")

@@ -113,7 +113,7 @@ def test_namespace_commands_have_fixed_boundaries_and_exposure(
     )
     assert "--unshare-user" in operator
     assert "--unshare-net" in operator
-    assert ["--bind", str(root.resolve()), "/workspace"] == operator[
+    assert ["--bind", str(root.resolve()), str(root.resolve())] == operator[
         operator.index("--bind") : operator.index("--bind") + 3
     ]
     assert operator[-6:] == ["--", "/python", "-m", "shuttle_gate", "keys", "generate"]
@@ -136,7 +136,11 @@ def test_namespace_commands_have_fixed_boundaries_and_exposure(
         gateway.index(str(runtime.output)) - 1 : gateway.index(str(runtime.output)) + 2
     ]
     assert gateway[gateway.index("--chdir") + 1] == "/"
-    assert operator[operator.index("--chdir") + 1] == "/workspace"
+    assert operator[operator.index("--chdir") + 1] == str(root.resolve())
+    root_environment = operator.index("SHUTTLE_GATE_ROOT")
+    assert operator[root_environment + 1] == str(root.resolve())
+    python_environment = operator.index("PYTHONPATH")
+    assert operator[python_environment + 1] == str(root.resolve() / "src")
 
     pasta = host.pasta_command(gateway, config)
     assert pasta.count("--udp-ports") == 2
