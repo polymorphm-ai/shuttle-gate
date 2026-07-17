@@ -54,9 +54,11 @@ Repeated generation preserves existing keys. Each peer receives separate key
 material and a configuration under `state/current/peers/NAME/`. `current` is an
 atomic pointer to a complete generation; never edit below it.
 
-`phone-config --output PATH` supports a controlled export. `--stdout` exposes
-private material to the terminal and should normally be avoided. Transfer the
-file securely and remove extra copies.
+`phone-config --output exports/FILE` writes an atomic mode-`0600` copy below
+the private, ignored `exports/` directory. Absolute, nested, and symlinked
+destinations are rejected because paths outside the operator sandbox cannot be
+published safely. `--stdout` exposes private material to the terminal and
+should normally be avoided. Transfer the file securely and remove extra copies.
 
 Stop the gateway before generating, rotating, pruning, or regenerating state.
 If a rotation outcome is unknown, repeat the same operation ID:

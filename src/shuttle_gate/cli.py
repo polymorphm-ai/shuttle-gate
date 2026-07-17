@@ -17,6 +17,7 @@ from .files import (
     InstancePaths,
     atomic_write,
     ensure_private_directory,
+    resolve_export_path,
     sandbox_secret_path,
     validate_ssh_files,
 )
@@ -192,6 +193,7 @@ def phone_config(
     if output is not None and stdout:
         abort("--output and --stdout are mutually exclusive")
     paths = instance_paths()
+    destination = resolve_export_path(paths, output) if output is not None else None
     config = configuration(paths)
     if name not in {peer.name for peer in config.wireguard.peers}:
         abort(f"peer is not declared in config.yaml: {name}")
@@ -201,9 +203,9 @@ def phone_config(
     if stdout:
         typer.echo(rendered, nl=False)
         return
-    if output is not None:
-        atomic_write(output.resolve(), rendered, 0o600)
-        typer.echo(str(output.resolve()))
+    if destination is not None:
+        atomic_write(destination, rendered, 0o600)
+        typer.echo(str(destination))
         return
     typer.echo(str(source))
 

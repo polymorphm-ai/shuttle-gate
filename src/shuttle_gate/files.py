@@ -141,6 +141,27 @@ def mounted_secret_path(paths: InstancePaths, configured: Path) -> Path:
     return paths.secrets / relative
 
 
+def resolve_export_path(paths: InstancePaths, requested: Path) -> Path:
+    """Resolve one explicit, project-local sensitive export destination."""
+
+    if (
+        requested.is_absolute()
+        or len(requested.parts) != 2
+        or requested.parts[0] != "exports"
+        or requested.name in {".", ".."}
+    ):
+        raise ConfigurationError("--output must use the project-relative form exports/FILE")
+    export_directory = paths.root / "exports"
+    destination = export_directory / requested.name
+    if export_directory.is_symlink() or destination.is_symlink():
+        raise ConfigurationError("export paths must not be symbolic links")
+    if export_directory.exists() and not export_directory.is_dir():
+        raise ConfigurationError("exports must be a directory")
+    if destination.exists() and not destination.is_file():
+        raise ConfigurationError("the export destination must be a regular file")
+    return destination
+
+
 def atomic_write_bytes(path: Path, data: bytes, mode: int) -> None:
     """Atomically replace one binary file with explicit permissions."""
 

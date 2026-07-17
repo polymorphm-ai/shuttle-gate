@@ -18,6 +18,7 @@ from shuttle_gate.files import (
     require_private_file,
     require_regular_file,
     resolve_config_path,
+    resolve_export_path,
     sandbox_secret_path,
     validate_ssh_files,
 )
@@ -74,6 +75,25 @@ def test_secret_paths_are_project_relative() -> None:
         sandbox_secret_path(Path("/tmp/id"))
     with pytest.raises(ConfigurationError):
         sandbox_secret_path(Path("other/id"))
+
+
+def test_export_paths_are_explicitly_project_local(tmp_path: Path) -> None:
+    paths = InstancePaths.from_root(tmp_path)
+
+    assert resolve_export_path(paths, Path("exports/phone.conf")) == tmp_path / "exports/phone.conf"
+    invalid_paths = (
+        Path("phone.conf"),
+        Path("exports/.."),
+        Path("exports/nested/phone.conf"),
+        tmp_path / "phone.conf",
+    )
+    for invalid in invalid_paths:
+        with pytest.raises(ConfigurationError, match="exports/FILE"):
+            resolve_export_path(paths, invalid)
+
+    (tmp_path / "exports").symlink_to(tmp_path / "elsewhere", target_is_directory=True)
+    with pytest.raises(ConfigurationError, match="symbolic"):
+        resolve_export_path(paths, Path("exports/phone.conf"))
 
 
 def test_resolve_config_path_uses_document_directory(tmp_path: Path) -> None:

@@ -66,17 +66,18 @@ def test_config_keys_peers_and_phone_workflow(
     assert phone.exit_code == 0
     assert "[Interface]" in phone.output
 
-    destination = tmp_path / "export" / "phone.conf"
+    destination = instance.root / "exports" / "phone.conf"
     exported = RUNNER.invoke(
         cli.app,
-        ["phone-config", "phone", "--output", str(destination)],
+        ["phone-config", "phone", "--output", "exports/phone.conf"],
     )
     assert exported.exit_code == 0
     assert destination.stat().st_mode & 0o777 == 0o600
+    assert destination.parent.stat().st_mode & 0o777 == 0o700
     assert RUNNER.invoke(cli.app, ["phone-config", "missing"]).exit_code == 2
     mutually_exclusive = RUNNER.invoke(
         cli.app,
-        ["phone-config", "phone", "--output", str(destination), "--stdout"],
+        ["phone-config", "phone", "--output", "exports/phone.conf", "--stdout"],
     )
     assert mutually_exclusive.exit_code == 2
 

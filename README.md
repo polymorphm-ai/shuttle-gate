@@ -46,6 +46,7 @@ tests use fixed container IDs and do not derive UID/GID values from the host.
 ./shuttle-gate config validate
 ./shuttle-gate keys generate
 ./shuttle-gate phone-config phone
+# Optional export: ./shuttle-gate phone-config phone --output exports/phone.conf
 ./shuttle-gate doctor
 ./shuttle-gate up
 ./shuttle-gate status

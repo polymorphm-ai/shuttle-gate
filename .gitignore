@@ -11,6 +11,7 @@ htmlcov/
 config.yaml
 secrets/
 state/
+exports/
 *.conf
 *.log
 .env

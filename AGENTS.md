@@ -44,7 +44,9 @@ success, and fail closed. See `docs/development.md` for recovery rules.
 Use current native Linux interfaces. Keep host network state unchanged and
 confine runtime effects to the rootless namespace. Mount configuration, secrets,
 and state with minimum access. Never let the toolkit modify the SSH server; it
-may only print manual key-setup instructions.
+may only print manual key-setup instructions. Keep host-facing paths valid
+outside the sandbox; explicit phone-config copies belong only below the ignored
+`exports/` directory.
 
 Use short Conventional Commit subjects. Pull requests must describe behavior
 and security impact, list tests run, and separate unrelated refactors.

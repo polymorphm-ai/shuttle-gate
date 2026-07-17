@@ -25,6 +25,11 @@ packages from its user cache. The launcher validates host inputs, creates an
 immutable application zip and launch manifest below `XDG_RUNTIME_DIR`, and asks
 the systemd user manager to start one transient service.
 
+Short-lived operator commands also run in bubblewrap. Their project mount keeps
+the checkout's absolute host pathname, so paths printed for later manual use
+remain valid after the sandbox exits. Parent directories at that pathname are
+namespace-only scaffolding; no other host content below them is exposed.
+
 `pasta` creates the rootless user/network namespace. ID 0 inside maps to the
 calling user outside; it grants no host root access. Automatic TCP and reverse
 port forwarding are disabled. Only each validated WireGuard UDP address/port is
