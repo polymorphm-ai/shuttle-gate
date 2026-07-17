@@ -1,4 +1,4 @@
-"""Protected project-local paths and atomic file operations."""
+"""Protected instance-local paths and atomic file operations."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from .errors import ConfigurationError, StateError
 
 @dataclass(frozen=True)
 class InstancePaths:
-    """Resolved paths for one project-local instance."""
+    """Resolved paths for one local instance."""
 
     root: Path
     config: Path
@@ -124,13 +124,13 @@ def validate_ssh_files(config: ProjectConfig, config_path: Path) -> tuple[Path, 
 
 
 def sandbox_secret_path(configured: Path) -> Path:
-    """Map a project-local ``secrets/`` path into the sandbox mount."""
+    """Map an instance-local ``secrets/`` path into the sandbox mount."""
 
     if configured.is_absolute():
-        raise ConfigurationError("SSH files must use project-relative secrets/ paths")
+        raise ConfigurationError("SSH files must use instance-relative secrets/ paths")
     parts = configured.parts
     if len(parts) < 2 or parts[0] != "secrets" or ".." in parts:
-        raise ConfigurationError("SSH files must be located below the project secrets/ directory")
+        raise ConfigurationError("SSH files must be located below the instance secrets/ directory")
     return Path("/secrets").joinpath(*parts[1:])
 
 
@@ -142,15 +142,16 @@ def mounted_secret_path(paths: InstancePaths, configured: Path) -> Path:
 
 
 def resolve_export_path(paths: InstancePaths, requested: Path) -> Path:
-    """Resolve one explicit, project-local sensitive export destination."""
+    """Resolve one explicit, instance-local sensitive export destination."""
 
     if (
-        requested.is_absolute()
+        not str(requested).isprintable()
+        or requested.is_absolute()
         or len(requested.parts) != 2
         or requested.parts[0] != "exports"
         or requested.name in {".", ".."}
     ):
-        raise ConfigurationError("--output must use the project-relative form exports/FILE")
+        raise ConfigurationError("--output must use the instance-relative form exports/FILE")
     export_directory = paths.root / "exports"
     destination = export_directory / requested.name
     if export_directory.is_symlink() or destination.is_symlink():

@@ -57,6 +57,15 @@ def instance_paths() -> InstancePaths:
     return InstancePaths.from_root(Path(root))
 
 
+def application_root() -> Path:
+    root = os.environ.get("SHUTTLE_GATE_APPLICATION_ROOT")
+    if root is None:
+        raise StateError(
+            "internal application root is unavailable; use the ./shuttle-gate launcher"
+        )
+    return Path(root).resolve()
+
+
 def configuration(paths: InstancePaths) -> ProjectConfig:
     return load_config(paths.config)
 
@@ -68,13 +77,13 @@ def abort(message: str, code: int = 2) -> NoReturn:
 
 @app.command("init")
 def initialize() -> None:
-    """Create project-local configuration and private directories."""
+    """Create instance-local configuration and private directories."""
 
     paths = instance_paths()
     with state_lock(paths, exclusive=True, blocking=False):
         if paths.config.exists() or paths.config.is_symlink():
             abort(f"refusing to overwrite existing configuration: {paths.config}")
-        example = paths.root / "config.example.yaml"
+        example = application_root() / "config.example.yaml"
         if not example.is_file():
             abort(f"example configuration is missing: {example}")
         ensure_private_directory(paths.secrets)

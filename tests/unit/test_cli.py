@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,7 @@ RUNNER = CliRunner()
 
 def _select_root(monkeypatch: pytest.MonkeyPatch, root: Path) -> None:
     monkeypatch.setenv("SHUTTLE_GATE_ROOT", str(root))
+    monkeypatch.setenv("SHUTTLE_GATE_APPLICATION_ROOT", str(root))
 
 
 def _fake_commands(monkeypatch: pytest.MonkeyPatch, fake: FakeRunner) -> None:
@@ -30,6 +32,11 @@ def test_instance_paths_require_launcher_context(monkeypatch: pytest.MonkeyPatch
 
     with pytest.raises(ShuttleGateError, match=r"use the \./shuttle-gate launcher"):
         cli.instance_paths()
+
+    monkeypatch.setenv("SHUTTLE_GATE_ROOT", "/instance")
+    monkeypatch.delenv("SHUTTLE_GATE_APPLICATION_ROOT", raising=False)
+    with pytest.raises(ShuttleGateError, match=r"use the \./shuttle-gate launcher"):
+        cli.application_root()
 
 
 def test_init_creates_private_local_layout_and_refuses_overwrite(
@@ -50,6 +57,34 @@ def test_init_creates_private_local_layout_and_refuses_overwrite(
     repeated = RUNNER.invoke(cli.app, ["init"])
     assert repeated.exit_code == 2
     assert "refusing to overwrite" in repeated.output
+
+
+def test_separate_unusual_instance_uses_application_template_and_prints_host_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application = tmp_path / "application source"
+    instance = tmp_path / "  -instance $ ' \" ; 🚀"
+    application.mkdir()
+    instance.mkdir()
+    monkeypatch.setenv("SHUTTLE_GATE_APPLICATION_ROOT", str(application))
+    monkeypatch.setenv("SHUTTLE_GATE_ROOT", str(instance))
+    (application / "config.example.yaml").write_text(
+        yaml.safe_dump(config_data()),
+        encoding="utf-8",
+    )
+
+    initialized = RUNNER.invoke(cli.app, ["init"])
+
+    assert initialized.exit_code == 0
+    assert f"created {instance / 'config.yaml'}" in initialized.output
+    public = instance / "secrets/id_ed25519.pub"
+    public.write_text("ssh-ed25519 public\n", encoding="ascii")
+    instructions = RUNNER.invoke(cli.app, ["ssh-key", "instructions"])
+    assert instructions.exit_code == 0
+    commands = [line.strip() for line in instructions.output.splitlines() if line.startswith("  ")]
+    assert shlex.split(commands[0])[2] == str(public)
+    assert shlex.split(commands[1])[-1] == str(instance / "secrets/known_hosts")
 
 
 def test_config_keys_peers_and_phone_workflow(

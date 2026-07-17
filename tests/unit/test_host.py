@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import os
+import pwd
 import shutil
+import socket
 import subprocess
 from contextlib import nullcontext
+from dataclasses import replace
+from ipaddress import IPv4Address
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +17,7 @@ import pytest
 
 import shuttle_gate.host as host
 from shuttle_gate.config import ProjectConfig
+from shuttle_gate.errors import StateError
 from shuttle_gate.files import InstancePaths, atomic_write_json, ensure_private_directory
 from shuttle_gate.host import HostError, RuntimePaths
 from shuttle_gate.state import StateView
@@ -53,6 +60,89 @@ def test_runtime_paths_use_private_xdg_location(
     monkeypatch.setenv("XDG_RUNTIME_DIR", "relative")
     with pytest.raises(HostError, match="absolute"):
         host.runtime_paths(Path("/project"))
+
+
+def test_instance_selection_accepts_unusual_printable_paths_and_canonicalizes_aliases(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application = tmp_path / "application"
+    application.mkdir()
+    instance = tmp_path / "  -instance $ ' \" ; [🚀]"
+    instance.mkdir()
+    alias = tmp_path / "instance-alias"
+    alias.symlink_to(instance, target_is_directory=True)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "runtime"))
+
+    selected, remaining = host.select_instance(
+        application,
+        ["--instance", ".", "status"],
+        cwd=instance,
+    )
+    assert selected == instance.resolve()
+    assert remaining == ["status"]
+    assert (
+        host.select_instance(
+            application,
+            [f"--instance={alias}", "status"],
+        )[0]
+        == instance.resolve()
+    )
+    assert host.runtime_paths(alias).instance_id == host.runtime_paths(instance).instance_id
+
+    dashed = tmp_path / "-instance"
+    dashed.mkdir()
+    assert (
+        host.select_instance(
+            application,
+            ["--instance", "-instance", "status"],
+            cwd=tmp_path,
+        )[0]
+        == dashed.resolve()
+    )
+
+
+@pytest.mark.parametrize(
+    "requested", ["", "line\nbreak", "tab\tpath", "escape\x1bpath", "nul\0path"]
+)
+def test_instance_selection_rejects_control_characters(
+    requested: str,
+    tmp_path: Path,
+) -> None:
+    application = tmp_path / "application"
+    application.mkdir()
+
+    with pytest.raises(HostError, match="printable"):
+        host.resolve_instance_root(application, requested, cwd=tmp_path)
+
+
+def test_instance_selection_rejects_missing_broad_and_overlapping_paths(tmp_path: Path) -> None:
+    application = tmp_path / "application"
+    application.mkdir()
+    nested = application / "instance"
+    nested.mkdir()
+    regular_file = tmp_path / "file"
+    regular_file.touch()
+    home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+
+    for requested, message in (
+        (str(tmp_path / "missing"), "does not exist"),
+        (str(regular_file), "directory"),
+        ("/", "broad"),
+        (str(home), "broad"),
+        (str(nested), "overlap"),
+        (str(tmp_path), "overlap"),
+    ):
+        with pytest.raises(HostError, match=message):
+            host.resolve_instance_root(application, requested)
+
+    with pytest.raises(HostError, match="requires"):
+        host.select_instance(application, ["--instance"])
+    with pytest.raises(HostError, match="only once"):
+        host.select_instance(
+            application,
+            ["--instance", str(application), "--instance", str(application), "status"],
+        )
 
 
 def test_command_resolution_and_structured_runner(
@@ -163,6 +253,44 @@ def test_namespace_commands_have_fixed_boundaries_and_exposure(
         )
 
 
+def test_operator_mounts_application_read_only_and_instance_at_its_host_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _commands(monkeypatch)
+    application = tmp_path / "application source"
+    instance = tmp_path / "  -instance $ 🚀"
+    application.mkdir()
+    instance.mkdir()
+
+    command = host.bubblewrap_command(
+        instance,
+        ["/python", "-m", "shuttle_gate", "version"],
+        network_namespace=False,
+        project_read_only=False,
+        application_root=application,
+    )
+
+    application_name = str(application.resolve())
+    instance_name = str(instance.resolve())
+    application_mount = command.index(application_name)
+    instance_mount = command.index(instance_name)
+    assert command[application_mount - 1 : application_mount + 2] == [
+        "--ro-bind",
+        application_name,
+        application_name,
+    ]
+    assert command[instance_mount - 1 : instance_mount + 2] == [
+        "--bind",
+        instance_name,
+        instance_name,
+    ]
+    assert command[command.index("PYTHONPATH") + 1] == str(application.resolve() / "src")
+    assert command[command.index("SHUTTLE_GATE_APPLICATION_ROOT") + 1] == application_name
+    assert command[command.index("SHUTTLE_GATE_ROOT") + 1] == instance_name
+    assert command[command.index("--chdir") + 1] == instance_name
+
+
 def test_systemd_service_retries_only_classified_status(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -178,6 +306,41 @@ def test_systemd_service_retries_only_classified_status(
     assert "--property=NoNewPrivileges=yes" in command
     assert "--property=TasksMax=256" in command
     assert command[-4:] == ["--", "/usr/bin/pasta", "--", "/usr/bin/bwrap"]
+
+    bundled = host.systemd_run_command(
+        f"shuttle-gate-{'2' * 20}.service",
+        ["/usr/bin/python", "-m", "shuttle_gate.claim"],
+        python_path=Path("/runtime/application.pyz"),
+    )
+    assert "--setenv=PYTHONPATH=/runtime/application.pyz" in bundled
+
+
+def test_socket_claims_are_shared_by_tuple_and_wrapped_with_fixed_boundaries(
+    config: ProjectConfig,
+    tmp_path: Path,
+) -> None:
+    first_runtime = _runtime(tmp_path / "first")
+    second_runtime = _runtime(tmp_path / "second")
+    shared = tmp_path / "session/shuttle-gate"
+    first_runtime = replace(first_runtime, root=shared / "first")
+    second_runtime = replace(second_runtime, root=shared / "second")
+
+    first = host.socket_claim_paths(first_runtime, config)
+    second = host.socket_claim_paths(second_runtime, config)
+
+    assert first == second
+    assert len(first) == len(config.wireguard.bind_addresses)
+    assert all(path.parent == shared / "claims" for path in first)
+    host.prepare_socket_claims(first)
+    assert all(path.stat().st_mode & 0o777 == 0o600 for path in first)
+    wrapped = host.claim_command(first, ["/usr/bin/pasta", "--", "/usr/bin/bwrap"])
+    assert wrapped[1:4] == ["-P", "-m", "shuttle_gate.claim"]
+    assert Path(wrapped[0]).is_absolute()
+    assert wrapped[-4:] == ["--", "/usr/bin/pasta", "--", "/usr/bin/bwrap"]
+    with pytest.raises(ValueError, match="empty"):
+        host.claim_command([], ["/usr/bin/true"])
+    with pytest.raises(HostError, match="invalid"):
+        host.prepare_socket_claims([])
 
 
 @pytest.mark.parametrize(
@@ -276,6 +439,20 @@ def test_host_binding_validation_checks_addresses_and_port(
         host._check_host_bindings(config)
 
 
+def test_host_udp_socket_probe_detects_an_existing_listener(config: ProjectConfig) -> None:
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        port = int(listener.getsockname()[1])
+        wireguard = config.wireguard.model_copy(
+            update={"bind_addresses": (IPv4Address("127.0.0.1"),), "listen_port": port}
+        )
+        selected = config.model_copy(update={"wireguard": wireguard})
+        with pytest.raises(HostError, match="unavailable"):
+            host._check_host_socket_availability(selected)
+
+    host._check_host_socket_availability(selected)
+
+
 def test_status_reads_bounded_snapshot_and_main_dispatches(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -298,15 +475,28 @@ def test_status_reads_bounded_snapshot_and_main_dispatches(
     assert host._status(tmp_path, ["--json"]) == 0
     assert json.loads(capsys.readouterr().out)["service_state"] == "active"
 
-    called: list[tuple[str, list[str]]] = []
+    called: list[tuple[Path, Path, list[str]]] = []
 
-    def dispatch_up(_root: Path, args: list[str]) -> int:
-        called.append(("up", list(args)))
+    def dispatch_up(application: Path, instance: Path, args: list[str]) -> int:
+        called.append((application, instance, list(args)))
         return 0
 
     monkeypatch.setattr(host, "_up", dispatch_up)
     assert host.main(tmp_path, ["up"]) == 0
-    assert called == [("up", [])]
+    assert called == [(tmp_path, tmp_path.resolve(), [])]
+
+    application = tmp_path / "application"
+    selected_instance = tmp_path / "selected instance"
+    application.mkdir()
+    selected_instance.mkdir()
+    assert (
+        host.main(
+            application,
+            ["--instance", str(selected_instance), "up"],
+        )
+        == 0
+    )
+    assert called[-1] == (application, selected_instance.resolve(), [])
 
 
 def test_host_state_status_and_readiness_fail_closed(
@@ -437,6 +627,7 @@ def test_status_text_down_logs_and_operator_paths(
     calls: list[list[str]] = []
     monkeypatch.setattr(host, "load_config", lambda _path: config)
     monkeypatch.setattr(host, "_check_host_bindings", lambda _config: None)
+    monkeypatch.setattr(host, "_check_host_socket_availability", lambda _config: None)
     monkeypatch.setattr(host, "_check_user_manager", lambda: None)
     sandbox_options: list[dict[str, Any]] = []
 
@@ -458,12 +649,56 @@ def test_status_text_down_logs_and_operator_paths(
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(host, "_run", record)
-    assert host._operator(tmp_path, ["keys", "generate"]) == 0
+    assert host._operator(tmp_path, tmp_path, ["keys", "generate"]) == 0
     assert calls[-1] == ["bwrap"]
-    assert host._operator(tmp_path, ["doctor"]) == 0
+    assert host._operator(tmp_path, tmp_path, ["doctor"]) == 0
     assert calls[-1] == ["pasta", "bwrap"]
     assert sandbox_options[-1]["project_read_only"] is True
-    assert pasta_configs[-1] is config
+    assert pasta_configs[-1] is None
+
+
+def test_down_removes_only_the_selected_instance_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    instances = [tmp_path / "one", tmp_path / "two"]
+    for instance in instances:
+        instance.mkdir()
+    runtimes = {
+        instance: RuntimePaths(
+            instance_id=label * 20,
+            unit_name=f"shuttle-gate-{label * 20}.service",
+            root=tmp_path / f"runtime-{label}",
+            inputs=tmp_path / f"runtime-{label}/inputs",
+            output=tmp_path / f"runtime-{label}/output",
+            launch=tmp_path / f"runtime-{label}/inputs/launch.json",
+            bundle=tmp_path / f"runtime-{label}/inputs/application.pyz",
+        )
+        for instance, label in zip(instances, ("1", "2"), strict=True)
+    }
+    for runtime in runtimes.values():
+        runtime.inputs.mkdir(parents=True)
+        runtime.output.mkdir()
+        runtime.launch.touch()
+        runtime.bundle.touch()
+        (runtime.output / "status.json").touch()
+
+    monkeypatch.setattr(host, "runtime_paths", lambda root: runtimes[root])
+    monkeypatch.setattr(host, "lifecycle_lock", lambda _root: nullcontext())
+    monkeypatch.setattr(host, "_host_state", lambda _paths: "inactive")
+    commands: list[list[str]] = []
+
+    def run(command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(host, "_run", run)
+
+    assert host._down(instances[0], []) == 0
+    assert not runtimes[instances[0]].root.exists()
+    assert runtimes[instances[1]].launch.exists()
+    assert runtimes[instances[1]].unit_name not in commands[-1]
+    assert runtimes[instances[0]].unit_name in commands[-1]
 
 
 def test_dispatch_and_entrypoint_error_translation(
@@ -476,7 +711,7 @@ def test_dispatch_and_entrypoint_error_translation(
     monkeypatch.setattr(host, "_down", lambda _root, _args: 10)
     monkeypatch.setattr(host, "_status", lambda _root, _args: 11)
     monkeypatch.setattr(host, "_logs", lambda _root, _args: 12)
-    monkeypatch.setattr(host, "_operator", lambda _root, _args: 13)
+    monkeypatch.setattr(host, "_operator", lambda _application, _instance, _args: 13)
     assert host.main(tmp_path, ["down"]) == 10
     assert host.main(tmp_path, ["status"]) == 11
     assert host.main(tmp_path, ["logs"]) == 12
@@ -522,7 +757,7 @@ def test_up_prepares_and_starts_once(
 
     monkeypatch.setattr(host, "_run", run)
 
-    assert host._up(instance.root, []) == 0
+    assert host._up(instance.root, instance.root, []) == 0
     assert ["systemd-run"] in commands
     assert runtime.inputs.is_dir()
 
@@ -552,8 +787,12 @@ def test_up_resumes_only_a_valid_active_launch(
     monkeypatch.setattr(
         host,
         "validate_launch_manifest",
-        lambda *_args, **_kwargs: {"launch_id": "3" * 32},
+        lambda *_args, **_kwargs: {
+            "launch_id": "3" * 32,
+            "application_digest": hashlib.sha256(b"application").hexdigest(),
+        },
     )
+    monkeypatch.setattr(host, "_application_bundle", lambda _root: b"application")
     monkeypatch.setattr(
         host,
         "_wait_for_state",
@@ -565,7 +804,10 @@ def test_up_resumes_only_a_valid_active_launch(
         lambda command, **_kwargs: subprocess.CompletedProcess(command, 0, "running", ""),
     )
 
-    assert host._up(instance.root, []) == 0
+    assert host._up(instance.root, instance.root, []) == 0
     assert waited == ["3" * 32]
+    monkeypatch.setattr(host, "_application_bundle", lambda _root: b"different")
+    with pytest.raises(StateError, match="application source differs"):
+        host._up(instance.root, instance.root, [])
     with pytest.raises(HostError, match="usage"):
-        host._up(instance.root, ["raw"])
+        host._up(instance.root, instance.root, ["raw"])

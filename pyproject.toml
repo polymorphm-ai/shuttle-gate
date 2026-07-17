@@ -37,6 +37,7 @@ ignore = [
 "shuttle-gate" = ["S603"]
 "test" = ["S603"]
 "src/shuttle_gate/host.py" = ["S108", "S603"]
+"src/shuttle_gate/claim.py" = ["S603"]
 "src/shuttle_gate/nft_tproxy.py" = ["S603", "S607"]
 "src/shuttle_gate/runner.py" = ["S603"]
 "src/shuttle_gate/runtime.py" = ["S603"]

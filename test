@@ -20,9 +20,11 @@ from __future__ import annotations
 import os
 import secrets
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import NoReturn
@@ -216,21 +218,138 @@ def _native_integration() -> int:
 
 
 def _systemd_integration() -> int:
-    from shuttle_gate.host import bubblewrap_command, pasta_command, systemd_run_command
+    from shuttle_gate.host import (
+        _build_application_bundle,
+        bubblewrap_command,
+        claim_command,
+        pasta_command,
+        prepare_socket_claims,
+        systemd_run_command,
+    )
 
     executable = shutil.which("true")
     if executable is None:
         _fail("true was not found")
-    unit = f"shuttle-gate-{secrets.token_hex(10)}.service"
-    sandbox = bubblewrap_command(
-        ROOT,
-        [executable],
-        network_namespace=True,
-        project_read_only=True,
+    with tempfile.TemporaryDirectory(prefix="shuttle-gate-systemd-") as temporary:
+        base = Path(temporary)
+        bundle = base / "application.pyz"
+        claim = base / "claims" / f"{secrets.token_hex(32)}.lock"
+        _build_application_bundle(ROOT, bundle)
+        prepare_socket_claims([claim])
+        unit = f"shuttle-gate-{secrets.token_hex(10)}.service"
+        sandbox = bubblewrap_command(
+            ROOT,
+            [executable],
+            network_namespace=True,
+            project_read_only=True,
+        )
+        inner = claim_command([claim], pasta_command(sandbox))
+        command = systemd_run_command(unit, inner, python_path=bundle)
+        command.insert(command.index("--"), "--wait")
+        return _run(command)
+
+
+def _free_udp_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        return int(listener.getsockname()[1])
+
+
+def _multi_instance_integration() -> int:
+    """Run independent namespaces and prove duplicate host sockets fail closed."""
+
+    from ipaddress import IPv4Address
+
+    from shuttle_gate.config import load_config
+    from shuttle_gate.host import (
+        RuntimePaths,
+        bubblewrap_command,
+        claim_command,
+        pasta_command,
+        prepare_socket_claims,
+        socket_claim_paths,
     )
-    command = systemd_run_command(unit, pasta_command(sandbox))
-    command.insert(command.index("--"), "--wait")
-    return _run(command)
+
+    first_port = _free_udp_port()
+    second_port = _free_udp_port()
+    while second_port == first_port:
+        second_port = _free_udp_port()
+    base_config = load_config(ROOT / "config.example.yaml")
+    processes: list[subprocess.Popen[str]] = []
+
+    def start(instance: Path, port: int) -> subprocess.Popen[str]:
+        wireguard = base_config.wireguard.model_copy(
+            update={"bind_addresses": (IPv4Address("127.0.0.1"),), "listen_port": port}
+        )
+        config = base_config.model_copy(update={"wireguard": wireguard})
+        sandbox = bubblewrap_command(
+            instance,
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            network_namespace=True,
+            project_read_only=True,
+            application_root=ROOT,
+        )
+        runtime_root = temporary_root / "session/shuttle-gate" / f"instance-{port}"
+        runtime = RuntimePaths(
+            instance_id="0" * 20,
+            unit_name=f"shuttle-gate-{'0' * 20}.service",
+            root=runtime_root,
+            inputs=runtime_root / "inputs",
+            output=runtime_root / "output",
+            launch=runtime_root / "inputs/launch.json",
+            bundle=runtime_root / "inputs/application.pyz",
+        )
+        claims = socket_claim_paths(runtime, config)
+        prepare_socket_claims(claims)
+        process = subprocess.Popen(
+            claim_command(claims, pasta_command(sandbox, config)),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            env=_environment(),
+        )
+        processes.append(process)
+        return process
+
+    def require_running(process: subprocess.Popen[str]) -> None:
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                _fail("an independent instance namespace stopped during startup")
+            time.sleep(0.05)
+
+    with tempfile.TemporaryDirectory(prefix="shuttle-gate-instances-") as temporary:
+        temporary_root = Path(temporary)
+        first_instance = temporary_root / "  -first $ ' \" ; 🚀"
+        second_instance = temporary_root / "second instance"
+        first_instance.mkdir()
+        second_instance.mkdir()
+        try:
+            first = start(first_instance, first_port)
+            require_running(first)
+            second = start(second_instance, second_port)
+            require_running(second)
+            duplicate = start(second_instance, first_port)
+            try:
+                duplicate_status = duplicate.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                _fail("a duplicate host UDP socket was not rejected")
+            if duplicate_status == 0:
+                _fail("a duplicate host UDP socket unexpectedly succeeded")
+            if first.poll() is not None or second.poll() is not None:
+                _fail("a socket conflict disturbed an existing instance")
+        finally:
+            for process in processes:
+                if process.poll() is None:
+                    process.terminate()
+            for process in processes:
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+    return 0
 
 
 def _container_integration() -> int:
@@ -257,6 +376,8 @@ def main() -> int:
     if not arguments:
         return 0
     if _systemd_integration() != 0:
+        return 1
+    if _multi_instance_integration() != 0:
         return 1
     if _native_integration() != 0:
         return 1

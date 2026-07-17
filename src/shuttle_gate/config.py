@@ -196,10 +196,12 @@ class SSHConfig(StrictModel):
     @field_validator("identity_file", "known_hosts_file")
     @classmethod
     def validate_secret_path(cls, value: Path) -> Path:
+        if not str(value).isprintable():
+            raise ValueError("must contain only printable path characters")
         if value.is_absolute() or ".." in value.parts:
-            raise ValueError("must be a project-relative path below secrets/")
+            raise ValueError("must be an instance-relative path below secrets/")
         if len(value.parts) < 2 or value.parts[0] != "secrets":
-            raise ValueError("must be located below the project secrets/ directory")
+            raise ValueError("must be located below the instance secrets/ directory")
         return value
 
 

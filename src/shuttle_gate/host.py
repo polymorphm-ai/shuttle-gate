@@ -7,8 +7,10 @@ import hashlib
 import io
 import json
 import os
+import pwd
 import re
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -22,7 +24,7 @@ from typing import Any, NoReturn
 
 from .config import ProjectConfig, load_config
 from .errors import ShuttleGateError, StateError
-from .files import InstancePaths, atomic_write_bytes, ensure_private_directory
+from .files import InstancePaths, atomic_write_bytes, ensure_private_directory, fsync_directory
 from .launch import prepare_launch, validate_launch_manifest
 from .state import locked_state_view
 
@@ -56,7 +58,7 @@ class HostError(ShuttleGateError):
 
 @dataclass(frozen=True)
 class RuntimePaths:
-    """Private volatile paths for one checkout."""
+    """Private volatile paths for one canonical instance."""
 
     instance_id: str
     unit_name: str
@@ -65,6 +67,71 @@ class RuntimePaths:
     output: Path
     launch: Path
     bundle: Path
+
+
+def resolve_instance_root(
+    application_root: Path,
+    requested: str | None,
+    *,
+    cwd: Path | None = None,
+) -> Path:
+    """Resolve one dedicated instance directory without unsafe broad mounts."""
+
+    application = application_root.resolve(strict=True)
+    if not str(application).isprintable():
+        raise HostError("application paths must contain only printable characters")
+    base = Path.cwd() if cwd is None else cwd
+    if requested is not None and (not requested or not requested.isprintable()):
+        raise HostError("instance paths must contain only printable characters")
+    candidate = application if requested is None else Path(requested)
+    if not candidate.is_absolute():
+        candidate = base / candidate
+    try:
+        resolved = candidate.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise HostError("instance directory does not exist or cannot be resolved") from exc
+    if not str(resolved).isprintable():
+        raise HostError("instance paths must contain only printable characters")
+    try:
+        info = resolved.stat(follow_symlinks=False)
+    except OSError as exc:
+        raise HostError("instance directory cannot be inspected") from exc
+    if not stat.S_ISDIR(info.st_mode):
+        raise HostError("instance path must resolve to a directory")
+    home = Path(pwd.getpwuid(os.getuid()).pw_dir).resolve()
+    if resolved in {Path("/"), home}:
+        raise HostError("refusing to use a broad system or home directory as an instance")
+    overlaps_application = resolved != application and (
+        resolved.is_relative_to(application) or application.is_relative_to(resolved)
+    )
+    if overlaps_application:
+        raise HostError("instance and application directories must not overlap")
+    return resolved
+
+
+def select_instance(
+    application_root: Path,
+    arguments: Sequence[str],
+    *,
+    cwd: Path | None = None,
+) -> tuple[Path, list[str]]:
+    """Parse the bounded global instance option before command dispatch."""
+
+    values = list(arguments)
+    requested: str | None = None
+    if values and values[0] == "--instance":
+        if len(values) < 2:
+            raise HostError("--instance requires a directory path")
+        requested = values[1]
+        values = values[2:]
+    elif values and values[0].startswith("--instance="):
+        requested = values[0].partition("=")[2]
+        if not requested:
+            raise HostError("--instance requires a directory path")
+        values = values[1:]
+    if values and (values[0] == "--instance" or values[0].startswith("--instance=")):
+        raise HostError("--instance may be specified only once")
+    return resolve_instance_root(application_root, requested, cwd=cwd), values
 
 
 def _fail(message: str, exit_code: int = 2) -> NoReturn:
@@ -126,6 +193,8 @@ def runtime_paths(root: Path) -> RuntimePaths:
     xdg = Path(xdg_value)
     if not xdg.is_absolute():
         raise HostError("XDG_RUNTIME_DIR must be an absolute path")
+    if not str(xdg).isprintable():
+        raise HostError("XDG_RUNTIME_DIR must contain only printable characters")
     base = xdg / "shuttle-gate" / instance_id
     return RuntimePaths(
         instance_id=instance_id,
@@ -209,26 +278,31 @@ def bubblewrap_command(
     network_namespace: bool,
     project_read_only: bool,
     runtime: RuntimePaths | None = None,
+    application_root: Path | None = None,
 ) -> list[str]:
     """Build the auditable filesystem/process sandbox command."""
 
     if not command:
         raise ValueError("sandbox command must not be empty")
-    operator_root = root.resolve()
+    instance_root = root.resolve()
+    application = (root if application_root is None else application_root).resolve()
     mounts = [*_system_mounts(), *_python_mounts()]
     project_mode = "--ro-bind" if project_read_only else "--bind"
     if runtime is None:
-        # Keep the project at its host pathname. Operator commands print paths
-        # for the user, so an artificial mount point would leak unusable names.
-        mounts.append((operator_root, operator_root))
+        # Keep both roots at their host pathnames. Operator commands print paths
+        # for the user, so artificial mount points would leak unusable names.
+        if application == instance_root:
+            mounts.append((instance_root, instance_root))
+        else:
+            mounts.extend([(application, application), (instance_root, instance_root)])
     else:
         mounts.extend(
             [
                 (runtime.bundle, Path("/opt/shuttle-gate/application.pyz")),
                 (runtime.launch, Path("/run/shuttle-gate/launch.json")),
-                (root / "config.yaml", Path("/config/config.yaml")),
-                (root / "secrets", Path("/secrets")),
-                (root / "state", Path("/state")),
+                (instance_root / "config.yaml", Path("/config/config.yaml")),
+                (instance_root / "secrets", Path("/secrets")),
+                (instance_root / "state", Path("/state")),
                 (runtime.output, Path("/run/shuttle-gate/output")),
             ]
         )
@@ -271,20 +345,20 @@ def bubblewrap_command(
 
     for source, destination in mounts:
         mode = "--ro-bind"
-        if runtime is None and source == operator_root and destination == operator_root:
+        if runtime is None and source == instance_root and destination == instance_root:
             mode = project_mode
         elif runtime is not None and destination == Path("/run/shuttle-gate/output"):
             mode = "--bind"
         arguments.extend([mode, str(source), str(destination)])
 
     if runtime is not None:
-        lock = root / "state" / ".state.lock"
+        lock = instance_root / "state" / ".state.lock"
         arguments.extend(["--bind", str(lock), "/state/.state.lock"])
 
     python_path = (
-        "/opt/shuttle-gate/application.pyz" if runtime is not None else str(operator_root / "src")
+        "/opt/shuttle-gate/application.pyz" if runtime is not None else str(application / "src")
     )
-    application_root = "/workspace" if runtime is not None else str(operator_root)
+    execution_root = "/workspace" if runtime is not None else str(instance_root)
     arguments.extend(
         [
             "--clearenv",
@@ -308,9 +382,11 @@ def bubblewrap_command(
             python_path,
             "--setenv",
             "SHUTTLE_GATE_ROOT",
-            application_root,
+            execution_root,
         ]
     )
+    if runtime is None:
+        arguments.extend(["--setenv", "SHUTTLE_GATE_APPLICATION_ROOT", str(application)])
     if runtime is not None:
         arguments.extend(
             [
@@ -331,7 +407,7 @@ def bubblewrap_command(
                 "/opt/shuttle-gate/application.pyz",
             ]
         )
-    working_directory = str(operator_root) if runtime is None else "/"
+    working_directory = str(instance_root) if runtime is None else "/"
     arguments.extend(["--chdir", working_directory, "--", *command])
     return arguments
 
@@ -365,10 +441,73 @@ def pasta_command(inner: Sequence[str], config: ProjectConfig | None = None) -> 
     return arguments
 
 
-def systemd_run_command(unit_name: str, inner: Sequence[str]) -> list[str]:
+def socket_claim_paths(paths: RuntimePaths, config: ProjectConfig) -> tuple[Path, ...]:
+    """Derive stable shared lock files for every exact host UDP socket."""
+
+    directory = paths.root.parent / "claims"
+    claims = {
+        directory
+        / (
+            hashlib.sha256(
+                f"udp\0{address.version}\0{address.compressed}\0{config.wireguard.listen_port}".encode(
+                    "ascii"
+                )
+            ).hexdigest()
+            + ".lock"
+        )
+        for address in config.wireguard.bind_addresses
+    }
+    return tuple(sorted(claims, key=str))
+
+
+def prepare_socket_claims(claims: Sequence[Path]) -> None:
+    """Create and validate durable session-local socket claim files."""
+
+    if not claims or len({claim.parent for claim in claims}) != 1:
+        raise HostError("socket claim set is invalid")
+    directory = claims[0].parent
+    ensure_private_directory(directory)
+    for claim in claims:
+        try:
+            descriptor = os.open(
+                claim,
+                os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW,
+                0o600,
+            )
+        except OSError as exc:
+            raise HostError("cannot create a host UDP socket claim") from exc
+        try:
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+                raise HostError("host UDP socket claim ownership or type is invalid")
+            os.fchmod(descriptor, 0o600)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    fsync_directory(directory)
+
+
+def claim_command(claims: Sequence[Path], inner: Sequence[str]) -> list[str]:
+    """Wrap one runtime command with ordered lifetime socket claims."""
+
+    if not claims or not inner:
+        raise ValueError("claims and runtime command must not be empty")
+    arguments = [sys.executable, "-P", "-m", "shuttle_gate.claim"]
+    for claim in claims:
+        arguments.extend(["--claim", str(claim)])
+    arguments.extend(["--", *inner])
+    return arguments
+
+
+def systemd_run_command(
+    unit_name: str,
+    inner: Sequence[str],
+    *,
+    python_path: Path | None = None,
+) -> list[str]:
     """Build one bounded transient user-service request."""
 
-    return [
+    arguments = [
         _command("systemd-run"),
         "--user",
         f"--unit={unit_name}",
@@ -387,13 +526,15 @@ def systemd_run_command(unit_name: str, inner: Sequence[str]) -> list[str]:
         "--property=StartLimitIntervalSec=60s",
         "--property=StartLimitBurst=3",
         "--description=Rootless shuttle-gate gateway",
-        "--",
-        *inner,
     ]
+    if python_path is not None:
+        arguments.append(f"--setenv=PYTHONPATH={python_path}")
+    arguments.extend(["--", *inner])
+    return arguments
 
 
-def _build_application_bundle(root: Path, destination: Path) -> None:
-    """Create a deterministic immutable zip import bundle from tracked source."""
+def _application_bundle(root: Path) -> bytes:
+    """Build deterministic immutable zip import bytes from application source."""
 
     source_root = root / "src" / "shuttle_gate"
     files = sorted(source_root.rglob("*.py"))
@@ -413,7 +554,13 @@ def _build_application_bundle(root: Path, destination: Path) -> None:
             entry.compress_type = zipfile.ZIP_DEFLATED
             entry.external_attr = 0o100444 << 16
             archive.writestr(entry, source.read_bytes())
-    atomic_write_bytes(destination, output.getvalue(), 0o600)
+    return output.getvalue()
+
+
+def _build_application_bundle(root: Path, destination: Path) -> None:
+    """Atomically publish one deterministic application bundle."""
+
+    atomic_write_bytes(destination, _application_bundle(root), 0o600)
 
 
 def _host_state(paths: RuntimePaths) -> str:
@@ -516,9 +663,31 @@ def _check_host_bindings(config: ProjectConfig) -> None:
         )
 
 
+def _check_host_socket_availability(config: ProjectConfig) -> None:
+    """Probe every exact UDP tuple without permitting address reuse."""
+
+    listeners: list[socket.socket] = []
+    try:
+        for address in config.wireguard.bind_addresses:
+            family = socket.AF_INET if address.version == 4 else socket.AF_INET6
+            listener = socket.socket(family, socket.SOCK_DGRAM)
+            listeners.append(listener)
+            if family == socket.AF_INET6:
+                listener.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            try:
+                listener.bind((str(address), config.wireguard.listen_port))
+            except OSError as exc:
+                raise HostError(
+                    f"configured host UDP socket is unavailable: {address}/{config.wireguard.listen_port}"
+                ) from exc
+    finally:
+        for listener in listeners:
+            listener.close()
+
+
 @contextmanager
 def lifecycle_lock(root: Path) -> Iterator[None]:
-    """Serialize lifecycle transitions for one checkout."""
+    """Serialize lifecycle transitions for one instance."""
 
     state = root / "state"
     ensure_private_directory(state)
@@ -547,18 +716,18 @@ def lifecycle_lock(root: Path) -> Iterator[None]:
             os.close(descriptor)
 
 
-def _up(root: Path, arguments: Sequence[str]) -> int:
+def _up(application_root: Path, instance_root: Path, arguments: Sequence[str]) -> int:
     if arguments:
         raise HostError("usage: ./shuttle-gate up")
-    paths = runtime_paths(root)
-    instance = InstancePaths.from_root(root)
+    paths = runtime_paths(instance_root)
+    instance = InstancePaths.from_root(instance_root)
     config = load_config(instance.config)
     for name in REQUIRED_RUNTIME_COMMANDS:
         _command(name)
     _check_user_manager()
     _check_host_bindings(config)
 
-    with lifecycle_lock(root):
+    with lifecycle_lock(instance_root):
         if _host_state(paths) in {"active", "activating"}:
             with locked_state_view(instance) as view:
                 manifest = validate_launch_manifest(
@@ -568,6 +737,11 @@ def _up(root: Path, arguments: Sequence[str]) -> int:
                     paths.launch,
                     paths.bundle,
                 )
+            current_digest = hashlib.sha256(_application_bundle(application_root)).hexdigest()
+            if manifest.get("application_digest") != current_digest:
+                raise StateError(
+                    "application source differs from the active gateway; run down first"
+                )
             launch_id = manifest.get("launch_id")
             if not isinstance(launch_id, str):
                 raise StateError("launch manifest identifier is invalid")
@@ -575,9 +749,10 @@ def _up(root: Path, arguments: Sequence[str]) -> int:
             print("shuttle-gate is ready")
             return 0
 
+        _check_host_socket_availability(config)
         _remove_known_runtime_files(paths)
         _prepare_runtime_directories(paths)
-        _build_application_bundle(root, paths.bundle)
+        _build_application_bundle(application_root, paths.bundle)
         manifest = prepare_launch(
             config,
             instance,
@@ -588,13 +763,20 @@ def _up(root: Path, arguments: Sequence[str]) -> int:
         )
         inner = [sys.executable, "-m", "shuttle_gate", "runtime"]
         sandbox = bubblewrap_command(
-            root,
+            instance_root,
             inner,
             network_namespace=True,
             project_read_only=True,
             runtime=paths,
+            application_root=application_root,
         )
-        service = systemd_run_command(paths.unit_name, pasta_command(sandbox, config))
+        claims = socket_claim_paths(paths, config)
+        prepare_socket_claims(claims)
+        service = systemd_run_command(
+            paths.unit_name,
+            claim_command(claims, pasta_command(sandbox, config)),
+            python_path=paths.bundle,
+        )
         _run(service, check=True)
         launch_id = manifest["launch_id"]
         if not isinstance(launch_id, str):
@@ -748,33 +930,42 @@ def _logs(root: Path, arguments: Sequence[str]) -> int:
     return _run(logs_command(runtime_paths(root).unit_name, arguments)).returncode
 
 
-def _operator(root: Path, arguments: Sequence[str]) -> int:
+def _operator(
+    application_root: Path,
+    instance_root: Path,
+    arguments: Sequence[str],
+) -> int:
     inner = [sys.executable, "-m", "shuttle_gate", *arguments]
     sandbox = bubblewrap_command(
-        root,
+        instance_root,
         inner,
         network_namespace=False,
         project_read_only=False,
+        application_root=application_root,
     )
     if arguments and arguments[0] == "doctor":
-        config = load_config(root / "config.yaml")
+        config = load_config(instance_root / "config.yaml")
         for name in REQUIRED_RUNTIME_COMMANDS:
             _command(name)
         _check_user_manager()
         _check_host_bindings(config)
         sandbox = bubblewrap_command(
-            root,
+            instance_root,
             inner,
             network_namespace=True,
             project_read_only=True,
+            application_root=application_root,
         )
-        sandbox = pasta_command(sandbox, config)
+        sandbox = pasta_command(sandbox)
     return _run(sandbox).returncode
 
 
 def _print_help() -> None:
     print(
-        """usage: ./shuttle-gate COMMAND [OPTIONS]
+        """usage: ./shuttle-gate [--instance PATH] COMMAND [OPTIONS]
+
+Global options:
+  --instance PATH         Use a dedicated instance directory
 
 Commands:
   init                    Create local configuration and protected directories
@@ -793,23 +984,27 @@ Commands:
     )
 
 
-def main(root: Path, arguments: Sequence[str] | None = None) -> int:
+def main(application_root: Path, arguments: Sequence[str] | None = None) -> int:
     """Dispatch the public host command."""
 
     values = list(sys.argv[1:] if arguments is None else arguments)
     if not values or values[0] in {"-h", "--help"}:
         _print_help()
         return 0
+    instance_root, values = select_instance(application_root, values)
+    if not values or values[0] in {"-h", "--help"}:
+        _print_help()
+        return 0
     command, rest = values[0], values[1:]
     if command == "up":
-        return _up(root, rest)
+        return _up(application_root, instance_root, rest)
     if command == "down":
-        return _down(root, rest)
+        return _down(instance_root, rest)
     if command == "status":
-        return _status(root, rest)
+        return _status(instance_root, rest)
     if command == "logs":
-        return _logs(root, rest)
-    return _operator(root, values)
+        return _logs(instance_root, rest)
+    return _operator(application_root, instance_root, values)
 
 
 def entrypoint(root: Path) -> None:

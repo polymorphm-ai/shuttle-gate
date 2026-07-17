@@ -83,6 +83,7 @@ def test_export_paths_are_explicitly_project_local(tmp_path: Path) -> None:
     assert resolve_export_path(paths, Path("exports/phone.conf")) == tmp_path / "exports/phone.conf"
     invalid_paths = (
         Path("phone.conf"),
+        Path("exports/line\nbreak.conf"),
         Path("exports/.."),
         Path("exports/nested/phone.conf"),
         tmp_path / "phone.conf",
