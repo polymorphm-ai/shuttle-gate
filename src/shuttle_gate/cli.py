@@ -12,7 +12,7 @@ import typer
 
 from . import __version__
 from .config import ProjectConfig, load_config
-from .errors import ShuttleGateError, TransientRuntimeFailure
+from .errors import ShuttleGateError, StateError, TransientRuntimeFailure
 from .files import (
     InstancePaths,
     atomic_write,
@@ -51,8 +51,10 @@ app.add_typer(ssh_key_app, name="ssh-key")
 
 
 def instance_paths() -> InstancePaths:
-    root = Path(os.environ.get("SHUTTLE_GATE_ROOT", "/workspace"))
-    return InstancePaths.from_root(root)
+    root = os.environ.get("SHUTTLE_GATE_ROOT")
+    if root is None:
+        raise StateError("internal execution root is unavailable; use the ./shuttle-gate launcher")
+    return InstancePaths.from_root(Path(root))
 
 
 def configuration(paths: InstancePaths) -> ProjectConfig:

@@ -25,6 +25,13 @@ def _fake_commands(monkeypatch: pytest.MonkeyPatch, fake: FakeRunner) -> None:
     monkeypatch.setattr(cli, "SubprocessRunner", lambda: fake)
 
 
+def test_instance_paths_require_launcher_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("SHUTTLE_GATE_ROOT", raising=False)
+
+    with pytest.raises(ShuttleGateError, match=r"use the \./shuttle-gate launcher"):
+        cli.instance_paths()
+
+
 def test_init_creates_private_local_layout_and_refuses_overwrite(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
