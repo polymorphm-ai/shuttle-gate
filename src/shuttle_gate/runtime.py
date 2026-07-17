@@ -18,11 +18,11 @@ from ipaddress import IPv6Address, ip_address
 from pathlib import Path
 from typing import Any
 
-from .compose import validate_launch_manifest
 from .config import ProjectConfig, effective_routes, load_config
-from .errors import RuntimeFailure
-from .files import InstancePaths, atomic_write, atomic_write_json, container_secret_path
+from .errors import CommandError, RuntimeFailure, ShuttleGateError, TransientRuntimeFailure
+from .files import InstancePaths, atomic_write, atomic_write_json, sandbox_secret_path
 from .keys import load_peer_keys, load_server_keys
+from .launch import validate_launch_manifest
 from .nft_tproxy import render_tproxy_table
 from .render import render_server_config
 from .runner import Runner, SubprocessRunner
@@ -41,26 +41,28 @@ REMOTE_PYTHON_CHECK_CODE = "import sys;raise SystemExit(0 if sys.version_info>=(
 REMOTE_PYTHON_CHECK_SCRIPT = 'exec "$1" -B -c "$2"'
 
 
-def runtime_paths() -> tuple[Path, InstancePaths, Path]:
-    """Resolve fixed container mount paths from the environment."""
+def runtime_paths() -> tuple[Path, InstancePaths, Path, Path, Path]:
+    """Resolve fixed sandbox mount paths from the controlled environment."""
 
     config_path = Path(os.environ.get("SHUTTLE_GATE_CONFIG", "/config/config.yaml"))
     state_path = Path(os.environ.get("SHUTTLE_GATE_STATE", "/state"))
     runtime_path = Path(os.environ.get("SHUTTLE_GATE_RUNTIME", "/run/shuttle-gate"))
+    launch_path = Path(os.environ.get("SHUTTLE_GATE_LAUNCH", "/run/shuttle-gate/launch.json"))
+    bundle_path = Path(os.environ.get("SHUTTLE_GATE_BUNDLE", "/opt/shuttle-gate/application.pyz"))
     paths = InstancePaths(
         root=Path("/"),
         config=config_path,
         state=state_path,
         secrets=Path("/secrets"),
     )
-    return config_path, paths, runtime_path
+    return config_path, paths, runtime_path, launch_path, bundle_path
 
 
 def ssh_arguments(config: ProjectConfig) -> list[str]:
-    """Build deterministic strict SSH arguments using container secret mounts."""
+    """Build deterministic strict SSH arguments using sandbox secret mounts."""
 
-    identity = container_secret_path(config.ssh.identity_file)
-    known_hosts = container_secret_path(config.ssh.known_hosts_file)
+    identity = sandbox_secret_path(config.ssh.identity_file)
+    known_hosts = sandbox_secret_path(config.ssh.known_hosts_file)
     return [
         "ssh",
         "-F",
@@ -140,10 +142,10 @@ def resolve_ssh_addresses(config: ProjectConfig) -> tuple[str, ...]:
             type=socket.SOCK_STREAM,
         )
     except socket.gaierror as exc:
-        raise RuntimeFailure(f"cannot resolve SSH host {config.ssh.host}: {exc}") from exc
+        raise TransientRuntimeFailure(f"cannot resolve SSH host {config.ssh.host}: {exc}") from exc
     addresses = sorted({str(answer[4][0]).split("%", 1)[0] for answer in answers})
     if not addresses:
-        raise RuntimeFailure(f"SSH host resolved to no addresses: {config.ssh.host}")
+        raise TransientRuntimeFailure(f"SSH host resolved to no addresses: {config.ssh.host}")
     return tuple(addresses)
 
 
@@ -159,10 +161,10 @@ def sshuttle_arguments(config: ProjectConfig, excluded_addresses: Sequence[str])
     command = [
         sys.executable,
         "-m",
-        "sshuttle",
+        "shuttle_gate.sshuttle_entry",
         "--method",
-        # sshuttle's CLI fixes the method name to "tproxy".  The runtime image
-        # replaces that module with shuttle-gate's native nftables method.
+        # sshuttle fixes the method name to "tproxy".  Our entrypoint injects
+        # the native module in memory before sshuttle resolves this name.
         "tproxy",
         "--tmark",
         TPROXY_MARK,
@@ -191,26 +193,6 @@ def sshuttle_arguments(config: ProjectConfig, excluded_addresses: Sequence[str])
     return command
 
 
-def dnsmasq_arguments(config: ProjectConfig) -> list[str]:
-    """Build a private-interface-only DNS forwarder command."""
-
-    if not config.dns.enabled or config.dns.upstream is None:
-        raise ValueError("DNS is disabled")
-    addresses = ",".join(str(interface.ip) for interface in config.wireguard.gateway_addresses)
-    return [
-        "dnsmasq",
-        "--keep-in-foreground",
-        "--bind-interfaces",
-        "--no-resolv",
-        "--no-hosts",
-        "--cache-size=150",
-        f"--listen-address={addresses}",
-        f"--server={config.dns.upstream}",
-        "--log-facility=-",
-        "--log-async=5",
-    ]
-
-
 def nft_filter(config: ProjectConfig) -> str:
     """Drop every packet that escaped local transparent-proxy delivery."""
 
@@ -234,8 +216,9 @@ class GatewayRuntime:
     paths: InstancePaths
     runtime_dir: Path
     runner: Runner = field(default_factory=SubprocessRunner)
+    launch_id: str = "unknown"
+    sysctl_root: Path | None = None
     sshuttle: subprocess.Popen[bytes] | None = None
-    dnsmasq: subprocess.Popen[bytes] | None = None
     stopping: threading.Event = field(default_factory=threading.Event)
 
     def start(self) -> None:
@@ -246,7 +229,11 @@ class GatewayRuntime:
         self.cleanup()
         self._write_status("starting")
         try:
-            remote_python_check(self.config, self.runner)
+            self._configure_namespace()
+            try:
+                remote_python_check(self.config, self.runner)
+            except CommandError as exc:
+                raise TransientRuntimeFailure(str(exc)) from exc
             rules = nft_filter(self.config)
             self.runner.run(["nft", "--check", "--file", "-"], input_text=rules)
             self.runner.run(["nft", "--file", "-"], input_text=rules)
@@ -254,8 +241,6 @@ class GatewayRuntime:
             self._setup_policy_routing()
             excluded = resolve_ssh_addresses(self.config)
             self._start_sshuttle(excluded)
-            if self.config.dns.enabled:
-                self.dnsmasq = subprocess.Popen(dnsmasq_arguments(self.config))
             self._activate_wireguard()
             self._verify_postconditions()
             self._write_status("ready")
@@ -269,9 +254,8 @@ class GatewayRuntime:
 
         while not self.stopping.wait(1.0):
             if self.sshuttle is None or self.sshuttle.poll() is not None:
-                raise RuntimeFailure("sshuttle exited unexpectedly")
-            if self.dnsmasq is not None and self.dnsmasq.poll() is not None:
-                raise RuntimeFailure("dnsmasq exited unexpectedly")
+                raise TransientRuntimeFailure("sshuttle exited unexpectedly")
+            self._write_status("ready")
 
     def request_stop(self, _signum: int, _frame: object) -> None:
         """Signal handler that leaves cleanup to the main thread."""
@@ -296,9 +280,7 @@ class GatewayRuntime:
             except Exception as exc:
                 failures.append(exc)
 
-        for process in (self.dnsmasq, self.sshuttle):
-            stop_process(process)
-        self.dnsmasq = None
+        stop_process(self.sshuttle)
         self.sshuttle = None
         run_cleanup(["nft", "delete", "table", "inet", NFT_TABLE])
         for family in ("-6", "-4"):
@@ -318,15 +300,34 @@ class GatewayRuntime:
             )
             run_cleanup(["ip", family, "route", "flush", "table", TPROXY_TABLE])
         run_cleanup(["ip", "link", "del", "dev", INTERFACE])
-        status = self.runtime_dir / STATUS_FILE
-        try:
-            status.unlink(missing_ok=True)
-        except Exception as exc:
-            failures.append(exc)
         if failures:
             raise RuntimeFailure(
-                "cleanup was incomplete; container namespace destruction is the final boundary"
+                "cleanup was incomplete; namespace destruction is the final boundary"
             ) from failures[0]
+
+    def _configure_namespace(self) -> None:
+        """Set fixed network-namespace sysctls without a host sysctl utility."""
+
+        if self.sysctl_root is None:
+            return
+        families = {route.version for route in effective_routes(self.config)}
+        values: dict[str, str] = {}
+        if 4 in families:
+            values.update(
+                {
+                    "net/ipv4/conf/all/src_valid_mark": "1\n",
+                    "net/ipv4/ip_forward": "1\n",
+                }
+            )
+        if 6 in families:
+            values["net/ipv6/conf/all/forwarding"] = "1\n"
+        for relative, value in values.items():
+            try:
+                (self.sysctl_root / relative).write_text(value, encoding="ascii")
+            except OSError as exc:
+                raise RuntimeFailure(
+                    f"cannot configure namespace sysctl {relative}: {exc}"
+                ) from exc
 
     def _setup_wireguard(self) -> None:
         self.runner.run(["ip", "link", "del", "dev", INTERFACE], check=False)
@@ -357,8 +358,6 @@ class GatewayRuntime:
 
         if self.sshuttle is None or self.sshuttle.poll() is not None:
             raise RuntimeFailure("sshuttle is not running after startup")
-        if self.config.dns.enabled and (self.dnsmasq is None or self.dnsmasq.poll() is not None):
-            raise RuntimeFailure("dnsmasq is not running after startup")
         for command in (
             ["ip", "link", "show", "dev", INTERFACE],
             ["wg", "show", INTERFACE, "dump"],
@@ -429,7 +428,7 @@ class GatewayRuntime:
             deadline = time.monotonic() + self.config.backend.startup_timeout_seconds
             while time.monotonic() < deadline:
                 if self.sshuttle.poll() is not None:
-                    raise RuntimeFailure(
+                    raise TransientRuntimeFailure(
                         f"sshuttle exited during startup with status {self.sshuttle.returncode}"
                     )
                 try:
@@ -438,21 +437,57 @@ class GatewayRuntime:
                     continue
                 if b"READY=1" in message:
                     return
-            raise RuntimeFailure(
+            raise TransientRuntimeFailure(
                 f"sshuttle did not become ready within {self.config.backend.startup_timeout_seconds}s"
             )
         finally:
             notify_socket.close()
             notify_path.unlink(missing_ok=True)
 
-    def _write_status(self, state: str, ignore_errors: bool = False) -> None:
-        value = {
-            "schema_version": 1,
+    def _peer_status(self) -> list[dict[str, Any]]:
+        peer_names: dict[str, str] = {}
+        for peer in self.config.wireguard.peers:
+            pair, _preshared = load_peer_keys(self.paths, peer.name)
+            peer_names[pair.public] = peer.name
+        dump = self.runner.run(["wg", "show", INTERFACE, "dump"]).stdout.splitlines()
+        peers: list[dict[str, Any]] = []
+        for line in dump[1:]:
+            columns = line.split("\t")
+            if len(columns) < 8:
+                continue
+            public_key = columns[0]
+            peers.append(
+                {
+                    "name": peer_names.get(public_key, "unknown"),
+                    "public_key": public_key,
+                    "endpoint": columns[2] or None,
+                    "allowed_ips": columns[3].split(",") if columns[3] else [],
+                    "latest_handshake": int(columns[4]),
+                    "received_bytes": int(columns[5]),
+                    "sent_bytes": int(columns[6]),
+                    "persistent_keepalive": int(columns[7]),
+                }
+            )
+        return peers
+
+    def _write_status(
+        self,
+        state: str,
+        ignore_errors: bool = False,
+        error: str | None = None,
+    ) -> None:
+        value: dict[str, Any] = {
+            "schema_version": 2,
+            "launch_id": self.launch_id,
             "state": state,
             "sshuttle_pid": self.sshuttle.pid if self.sshuttle is not None else None,
-            "dnsmasq_pid": self.dnsmasq.pid if self.dnsmasq is not None else None,
-            "dns_enabled": self.config.dns.enabled,
+            "health": "ok" if state == "ready" else "degraded",
+            "wireguard_interface": INTERFACE,
+            "routes": [str(route) for route in effective_routes(self.config)],
+            "peers": self._peer_status() if state == "ready" else [],
         }
+        if error is not None:
+            value["error"] = error[:4096]
         try:
             atomic_write_json(self.runtime_dir / STATUS_FILE, value, 0o600)
         except OSError:
@@ -472,21 +507,51 @@ def _stop_process(process: subprocess.Popen[bytes] | None) -> None:
 
 
 def run_gateway() -> int:
-    """Container entrypoint for the long-running gateway."""
+    """Run the long-lived gateway and preserve a terminal status snapshot."""
 
-    config_path, paths, runtime_dir = runtime_paths()
+    config_path, paths, runtime_dir, launch_path, bundle_path = runtime_paths()
     config = load_config(config_path)
     with locked_state_view(paths) as view:
-        validate_launch_manifest(config, view.paths, view.generation)
-        runtime = GatewayRuntime(config=config, paths=view.paths, runtime_dir=runtime_dir)
+        manifest = validate_launch_manifest(
+            config,
+            view.paths,
+            view.generation,
+            launch_path,
+            bundle_path,
+        )
+        launch_id = manifest.get("launch_id")
+        if not isinstance(launch_id, str):
+            raise RuntimeFailure("launch identifier is invalid")
+        runtime = GatewayRuntime(
+            config=config,
+            paths=view.paths,
+            runtime_dir=runtime_dir,
+            launch_id=launch_id,
+            sysctl_root=Path("/proc/sys"),
+        )
         signal.signal(signal.SIGTERM, runtime.request_stop)
         signal.signal(signal.SIGINT, runtime.request_stop)
         try:
             runtime.start()
             runtime.supervise()
-            return 0
-        finally:
-            runtime.cleanup()
+        except BaseException as exc:
+            cleanup_error: RuntimeFailure | None = None
+            try:
+                runtime.cleanup()
+            except RuntimeFailure as failure:
+                cleanup_error = failure
+            if isinstance(exc, ShuttleGateError):
+                message = str(exc)
+            else:
+                message = f"unexpected runtime failure: {type(exc).__name__}"
+            if cleanup_error is not None:
+                message += f"; {cleanup_error}"
+            terminal_state = "retrying" if isinstance(exc, TransientRuntimeFailure) else "failed"
+            runtime._write_status(terminal_state, ignore_errors=True, error=message)
+            raise
+        runtime.cleanup()
+        runtime._write_status("stopped", ignore_errors=True)
+        return 0
 
 
 def read_runtime_status(runtime_dir: Path) -> dict[str, Any]:
@@ -499,7 +564,7 @@ def read_runtime_status(runtime_dir: Path) -> dict[str, Any]:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, OSError, json.JSONDecodeError) as exc:
         raise RuntimeFailure(f"runtime status is unavailable: {exc}") from exc
-    if not isinstance(value, dict) or value.get("schema_version") != 1:
+    if not isinstance(value, dict) or value.get("schema_version") != 2:
         raise RuntimeFailure("runtime status has an invalid format")
     return value
 
@@ -507,19 +572,16 @@ def read_runtime_status(runtime_dir: Path) -> dict[str, Any]:
 def healthcheck() -> int:
     """Return success only for a live ready gateway."""
 
-    config_path, _paths, runtime_dir = runtime_paths()
+    config_path, _paths, runtime_dir, _launch_path, _bundle_path = runtime_paths()
     try:
         config = load_config(config_path)
         status = read_runtime_status(runtime_dir)
         if status.get("state") != "ready":
             return 1
-        for key in ("sshuttle_pid", "dnsmasq_pid"):
-            pid = status.get(key)
-            if pid is None and key == "dnsmasq_pid" and not status.get("dns_enabled"):
-                continue
-            if not isinstance(pid, int):
-                return 1
-            os.kill(pid, 0)
+        pid = status.get("sshuttle_pid")
+        if not isinstance(pid, int):
+            return 1
+        os.kill(pid, 0)
         runner = SubprocessRunner()
         checks = (
             ["ip", "link", "show", "dev", INTERFACE],
@@ -541,41 +603,10 @@ def healthcheck() -> int:
 
 
 def runtime_status() -> dict[str, Any]:
-    """Return operator status without private or preshared WireGuard keys."""
+    """Return the current secret-free snapshot from inside the namespace."""
 
-    config_path, paths, runtime_dir = runtime_paths()
-    config = load_config(config_path)
-    status = read_runtime_status(runtime_dir)
-    peer_names: dict[str, str] = {}
-    for peer in config.wireguard.peers:
-        pair, _preshared = load_peer_keys(paths, peer.name)
-        peer_names[pair.public] = peer.name
-    dump = SubprocessRunner().run(["wg", "show", INTERFACE, "dump"]).stdout.splitlines()
-    peers: list[dict[str, Any]] = []
-    for line in dump[1:]:
-        columns = line.split("\t")
-        if len(columns) < 8:
-            continue
-        public_key = columns[0]
-        peers.append(
-            {
-                "name": peer_names.get(public_key, "unknown"),
-                "public_key": public_key,
-                "endpoint": columns[2] or None,
-                "allowed_ips": columns[3].split(",") if columns[3] else [],
-                "latest_handshake": int(columns[4]),
-                "received_bytes": int(columns[5]),
-                "sent_bytes": int(columns[6]),
-                "persistent_keepalive": int(columns[7]),
-            }
-        )
-    return {
-        **status,
-        "health": "ok" if healthcheck() == 0 else "degraded",
-        "wireguard_interface": INTERFACE,
-        "peers": peers,
-        "routes": [str(route) for route in effective_routes(config)],
-    }
+    _config_path, _paths, runtime_dir, _launch_path, _bundle_path = runtime_paths()
+    return read_runtime_status(runtime_dir)
 
 
 def doctor_checks(config: ProjectConfig, runner: Runner) -> list[str]:
@@ -589,10 +620,12 @@ def doctor_checks(config: ProjectConfig, runner: Runner) -> list[str]:
         runner.run(["ip", "link", "del", "dev", interface], check=False)
     messages.append("kernel WireGuard: ok")
 
-    checks = (
-        (socket.AF_INET, 12001, [(socket.AF_INET, 8, False, "10.0.0.0", 0, 0)]),
-        (socket.AF_INET6, 12002, [(socket.AF_INET6, 48, False, "fd00::", 0, 0)]),
-    )
+    families = {route.version for route in effective_routes(config)}
+    checks: list[tuple[int, int, list[tuple[int, int, bool, str, int, int]]]] = []
+    if 4 in families:
+        checks.append((socket.AF_INET, 12001, [(socket.AF_INET, 8, False, "10.0.0.0", 0, 0)]))
+    if 6 in families:
+        checks.append((socket.AF_INET6, 12002, [(socket.AF_INET6, 48, False, "fd00::", 0, 0)]))
     for family, port, subnets in checks:
         rules = render_tproxy_table(
             port=port,
@@ -612,7 +645,8 @@ def doctor_checks(config: ProjectConfig, runner: Runner) -> list[str]:
                 ["nft", "delete", "table", nft_family, f"shuttle_gate_tproxy_{port}"],
                 check=False,
             )
-    messages.append("native nftables IPv4/IPv6 TPROXY: ok")
+    rendered_families = "/".join(f"IPv{family}" for family in sorted(families))
+    messages.append(f"native nftables {rendered_families} TPROXY: ok")
     remote_python_check(config, runner)
     messages.append("SSH authentication and remote Python >= 3.9: ok")
     return messages

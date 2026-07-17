@@ -22,7 +22,7 @@ def test_endpoint_formats_ipv6_literal() -> None:
     assert endpoint(config) == "[2001:db8::10]:51820"
 
 
-def test_phone_config_contains_dual_stack_dns_routes_and_no_server_private_key(
+def test_phone_config_contains_direct_upstream_dns_and_no_server_private_key(
     config: ProjectConfig,
 ) -> None:
     peer = config.wireguard.peers[0]
@@ -30,13 +30,13 @@ def test_phone_config_contains_dual_stack_dns_routes_and_no_server_private_key(
 
     assert "PrivateKey = phone-private" in rendered
     assert "Address = 10.77.0.2/32, fd77::2/128" in rendered
-    assert "DNS = 10.77.0.1, fd77::1" in rendered
+    assert "DNS = fd20:1234::53" in rendered
     assert "Endpoint = gate.example.test:51820" in rendered
     assert "AllowedIPs = 10.0.0.0/8, fd20:1234::/48" in rendered
     assert "server-private" not in rendered
 
 
-def test_dns_gateway_route_is_added_when_not_covered() -> None:
+def test_dns_uses_only_explicitly_selected_routes() -> None:
     data = config_data()
     data["routing"]["networks"] = ["192.168.0.0/16", "fd20:1234::/48"]
     data["dns"]["upstream"] = "fd20:1234::53"
@@ -45,8 +45,6 @@ def test_dns_gateway_route_is_added_when_not_covered() -> None:
     assert peer_allowed_routes(config) == (
         "192.168.0.0/16",
         "fd20:1234::/48",
-        "10.77.0.1/32",
-        "fd77::1/128",
     )
 
 
@@ -71,3 +69,17 @@ def test_fingerprint_changes_for_operator_visible_phone_setting(config: ProjectC
 
     second = phone_fingerprint(changed, changed.wireguard.peers[0], "server", "peer", "psk")
     assert first != second
+
+    dns_data = deepcopy(config_data())
+    dns_data["dns"]["upstream"] = "fd20:1234::54"
+    dns_changed = ProjectConfig.model_validate(dns_data)
+    assert (
+        phone_fingerprint(
+            dns_changed,
+            dns_changed.wireguard.peers[0],
+            "server",
+            "peer",
+            "psk",
+        )
+        != first
+    )

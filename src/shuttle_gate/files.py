@@ -41,9 +41,6 @@ class InstancePaths:
     def peer_dir(self, name: str) -> Path:
         return self.data_dir() / "peers" / name
 
-    def runtime_dir(self) -> Path:
-        return self.state / "runtime"
-
     def data_dir(self) -> Path:
         """Return the active or explicitly selected persistent generation."""
 
@@ -126,8 +123,8 @@ def validate_ssh_files(config: ProjectConfig, config_path: Path) -> tuple[Path, 
     return identity, known_hosts
 
 
-def container_secret_path(configured: Path) -> Path:
-    """Map a project-local ``secrets/`` path into the gateway mount."""
+def sandbox_secret_path(configured: Path) -> Path:
+    """Map a project-local ``secrets/`` path into the sandbox mount."""
 
     if configured.is_absolute():
         raise ConfigurationError("SSH files must use project-relative secrets/ paths")
@@ -140,19 +137,19 @@ def container_secret_path(configured: Path) -> Path:
 def mounted_secret_path(paths: InstancePaths, configured: Path) -> Path:
     """Resolve a validated configured secret against this execution environment."""
 
-    relative = container_secret_path(configured).relative_to("/secrets")
+    relative = sandbox_secret_path(configured).relative_to("/secrets")
     return paths.secrets / relative
 
 
-def atomic_write(path: Path, data: str, mode: int) -> None:
-    """Atomically replace one UTF-8 file with explicit permissions."""
+def atomic_write_bytes(path: Path, data: bytes, mode: int) -> None:
+    """Atomically replace one binary file with explicit permissions."""
 
     ensure_private_directory(path.parent)
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     temporary = Path(temporary_name)
     try:
         os.fchmod(descriptor, mode)
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as output:
+        with os.fdopen(descriptor, "wb") as output:
             output.write(data)
             output.flush()
             os.fsync(output.fileno())
@@ -163,6 +160,12 @@ def atomic_write(path: Path, data: str, mode: int) -> None:
             os.close(descriptor)
         temporary.unlink(missing_ok=True)
         raise
+
+
+def atomic_write(path: Path, data: str, mode: int) -> None:
+    """Atomically replace one UTF-8 file with explicit permissions."""
+
+    atomic_write_bytes(path, data.encode("utf-8"), mode)
 
 
 def atomic_write_json(path: Path, value: dict[str, Any], mode: int = 0o600) -> None:

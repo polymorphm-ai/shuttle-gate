@@ -238,7 +238,7 @@ class RoutingConfig(StrictModel):
 
 
 class DNSConfig(StrictModel):
-    """Internal DNS forwarding settings."""
+    """Phone DNS settings routed directly through the gateway."""
 
     enabled: bool = False
     upstream: IPAddress | None = None
@@ -298,6 +298,13 @@ class ProjectConfig(StrictModel):
     @model_validator(mode="after")
     def validate_cross_fields(self) -> ProjectConfig:
         routes = effective_routes(self)
+        gateway_families = {interface.version for interface in self.wireguard.gateway_addresses}
+        unsupported_route_families = {
+            route.version for route in routes if route.version not in gateway_families
+        }
+        if unsupported_route_families:
+            rendered = ", ".join(f"IPv{family}" for family in sorted(unsupported_route_families))
+            raise ValueError(f"routing uses {rendered} without a WireGuard gateway address")
         if (
             self.dns.enabled
             and self.dns.upstream is not None
@@ -307,6 +314,18 @@ class ProjectConfig(StrictModel):
             )
         ):
             raise ValueError("DNS upstream is not covered by configured routing")
+        if self.dns.enabled and self.dns.upstream is not None:
+            family = self.dns.upstream.version
+            incompatible = [
+                peer.name
+                for peer in self.wireguard.peers
+                if all(address.version != family for address in peer.addresses)
+            ]
+            if incompatible:
+                raise ValueError(
+                    f"DNS upstream is IPv{family}, but peers lack IPv{family}: "
+                    + ", ".join(incompatible)
+                )
         return self
 
 

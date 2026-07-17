@@ -12,13 +12,13 @@ from shuttle_gate.files import (
     InstancePaths,
     atomic_write,
     atomic_write_json,
-    container_secret_path,
     ensure_private_directory,
     mounted_secret_path,
     read_text_secret,
     require_private_file,
     require_regular_file,
     resolve_config_path,
+    sandbox_secret_path,
     validate_ssh_files,
 )
 
@@ -67,13 +67,13 @@ def test_private_file_rejects_group_access_and_multiline(tmp_path: Path) -> None
 
 
 def test_secret_paths_are_project_relative() -> None:
-    assert container_secret_path(Path("secrets/keys/id")) == Path("/secrets/keys/id")
+    assert sandbox_secret_path(Path("secrets/keys/id")) == Path("/secrets/keys/id")
     paths = InstancePaths.from_root(Path("/project"))
     assert mounted_secret_path(paths, Path("secrets/keys/id")) == Path("/project/secrets/keys/id")
     with pytest.raises(ConfigurationError):
-        container_secret_path(Path("/tmp/id"))
+        sandbox_secret_path(Path("/tmp/id"))
     with pytest.raises(ConfigurationError):
-        container_secret_path(Path("other/id"))
+        sandbox_secret_path(Path("other/id"))
 
 
 def test_resolve_config_path_uses_document_directory(tmp_path: Path) -> None:

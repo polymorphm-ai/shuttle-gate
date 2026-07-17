@@ -51,6 +51,10 @@ def test_valid_dual_stack_config_is_immutable() -> None:
             "not covered",
         ),
         (
+            lambda data: data["wireguard"]["peers"][0].update(addresses=["10.77.0.2/32"]),
+            "peers lack IPv6",
+        ),
+        (
             lambda data: data["routing"].update(networks=["224.0.0.0/4"]),
             "multicast",
         ),
@@ -177,6 +181,14 @@ def test_rejects_duplicate_peer_name_missing_family_and_non_unicast_endpoints() 
     missing_family["wireguard"]["gateway_addresses"] = ["10.77.0.1/24"]
     with pytest.raises(ValueError, match="without a gateway"):
         ProjectConfig.model_validate(missing_family)
+
+    route_without_gateway = config_data()
+    route_without_gateway["wireguard"]["gateway_addresses"] = ["10.77.0.1/24"]
+    for peer in route_without_gateway["wireguard"]["peers"]:
+        peer["addresses"] = [address for address in peer["addresses"] if ":" not in address]
+    route_without_gateway["dns"] = {"enabled": False}
+    with pytest.raises(ValueError, match="routing uses IPv6 without"):
+        ProjectConfig.model_validate(route_without_gateway)
 
     endpoint = config_data()
     endpoint["wireguard"]["endpoint_host"] = "ff02::1"

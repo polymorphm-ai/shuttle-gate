@@ -1,110 +1,108 @@
 # Architecture
 
-## Components and isolation
+## Process and isolation model
 
 ```text
 phone WireGuard app
         |
-        | encrypted UDP to one exact laptop address
+        | encrypted UDP to exact laptop address/port
         v
-Docker-published WireGuard socket
+pasta (rootless user + network namespace)
         |
         v
-gateway container network namespace
-  wg0 -> native nftables TPROXY -> sshuttle client -> SSH connection
-                                  |
-                                  v
-                       temporary remote Python process
-                                  |
-                                  v
-                         target network service
+bubblewrap runtime sandbox
+  wg0 -> native nftables TPROXY -> sshuttle -> SSH session
+                                      |
+                                      v
+                           temporary remote Python
+                                      |
+                                      v
+                              target service
 ```
 
-The host launcher is a dependency-free Python script. It validates local launch
-metadata and calls Docker Compose. Pydantic, YAML, WireGuard tools, sshuttle,
-dnsmasq, nft, tests, Ruff, and mypy stay inside Docker images.
+`./shuttle-gate` is a locked PEP 723 script. uv supplies Python and application
+packages from its user cache. The launcher validates host inputs, creates an
+immutable application zip and launch manifest below `XDG_RUNTIME_DIR`, and asks
+the systemd user manager to start one transient service.
 
-The static Compose file defines separate roles:
+`pasta` creates the rootless user/network namespace. ID 0 inside maps to the
+calling user outside; it grants no host root access. Automatic TCP and reverse
+port forwarding are disabled. Only each validated WireGuard UDP address/port is
+forwarded. `bubblewrap` then drops all capabilities except namespace-local
+`CAP_NET_ADMIN` and exposes only system runtime files, the immutable application
+zip, read-only configuration/secrets/state, the exact state lock, and writable
+volatile output. The project tree is not mounted into the service.
 
-- `tool`: unprivileged, no network, read-write access to the project directory;
-- `doctor`: disposable network check with `NET_ADMIN` and read-only credentials;
-- `gateway`: long-running, read-only filesystem, tmpfs runtime, minimal
-  capabilities, and read-only secrets/state;
-- `test`: no-network quality environment;
-- `integration-test`: opt-in disposable kernel test with only `NET_ADMIN`.
+Production never invokes Docker. Docker Compose exists only for a second,
+disposable integration-test environment.
 
-## Persistent state and publication
+## Durable state and launch publication
 
-WireGuard keys, peer configurations, fingerprints, and completed operation
-receipts live in immutable directories below `state/generations/`. Writers copy
-the current generation into a private staging directory, apply the complete
-change, validate it, fsync files and directories, and atomically replace the
-`state/current` symlink. The old generation remains authoritative until that
-single publish step. Incomplete and unreferenced generations are reconciled by
-the next writer.
+WireGuard keys, peer configurations, fingerprints, and operation receipts live
+in immutable directories under `state/generations/`. A writer constructs and
+validates a private staging generation, fsyncs it, renames it, then atomically
+replaces `state/current`. A project `flock` serializes writers. Readers hold a
+shared lock while using the resolved generation.
 
-A project `flock` serializes writers. Readers hold a shared lock while their
-generation is in use; the gateway holds it for its entire lifetime.
-Non-idempotent key rotations publish a request receipt in the same generation,
-so retrying an operation ID cannot rotate twice. The two-file SSH identity
-replacement uses a durable journal and backups, then records its request
-receipt before removing recovery data.
+Non-idempotent rotations publish an operation-ID receipt with their result, so
+a retry cannot rotate twice. SSH identity replacement uses a durable journal
+and backups until both key files and the state receipt are verified.
 
-Launch preparation writes an immutable, content-addressed Compose override and
-then atomically publishes `state/runtime/launch.json`. The manifest binds the
-configuration, state generation, SSH identity, known-hosts file, and override
-by SHA-256 digest. Both the dependency-free host launcher and gateway validate
-this plan. Concurrent `up` and `down` calls are serialized by a separate
-lifecycle lock; `up` resumes an already-running valid plan instead of preparing
-a conflicting one.
+The host builds a deterministic application zip and atomically publishes a
+schema-versioned launch manifest. Digests bind the launch ID, systemd unit,
+configuration, credentials, state generation, application bundle, and exact
+bind sockets. The sandbox validates every digest again before changing its
+network namespace. Lifecycle calls use a separate host lock; a valid running
+launch is resumed rather than replaced.
 
 ## Packet flow
 
-1. Kernel WireGuard authenticates a named peer and enforces its peer address.
-2. The native nftables method sees TCP or UDP for configured routes in
-   `prerouting`.
-3. The rule applies a packet mark and TPROXY delivery to sshuttle's transparent
-   listener. Family-specific policy routes send marked packets to loopback.
-4. sshuttle multiplexes TCP or UDP data through the authenticated SSH session.
-5. A temporary Python process on the SSH server opens connections from that
-   server's normal user context. No remote root permission is required.
-6. Responses return through sshuttle and WireGuard to the original peer.
+1. Kernel WireGuard authenticates the peer and enforces its peer address.
+2. Family-specific native nftables rules match TCP/UDP in declared routes.
+3. Packet marks, TPROXY, and namespace-local policy routes deliver traffic to
+   sshuttle's transparent listener.
+4. sshuttle multiplexes flows over authenticated SSH.
+5. A temporary Python process opens connections from the remote user's normal
+   context; it writes no remote file and exits with the session.
 
-The SSH endpoint, WireGuard peer networks, multicast, and limited broadcast are
-explicit exclusions. A separate `inet shuttle_gate` forward chain has a drop
-policy. Intended traffic is delivered locally to TPROXY; any packet that would
-otherwise be routed directly out of the container fails closed at `forward`.
+The SSH endpoint, peer networks, multicast, and limited broadcast are excluded.
+An owned nftables forward chain defaults to drop, so uncaptured traffic cannot
+escape directly through pasta.
 
-## Native nftables method
-
-sshuttle 1.3.2 has a fixed command-line method name for Linux TPROXY. During the
-image build, shuttle-gate replaces that installed method module with its own
-implementation. Transparent TCP/UDP socket behavior is retained, but firewall
-transactions are rendered as family-specific native nftables tables. Each
-transaction is syntax-checked with `nft --check` before atomic application.
-
-No legacy firewall executable or compatibility frontend is installed or
-invoked by shuttle-gate.
+sshuttle's fixed `nft-tproxy` method name is redirected in memory to the
+project implementation. No installed package or cache file is patched. Each
+nftables transaction is syntax-checked with `nft --check` before atomic apply;
+no legacy firewall frontend is used.
 
 ## DNS and IPv6
 
-When enabled, dnsmasq binds only to configured `wg0` gateway addresses. It uses
-one explicit upstream, whose UDP traffic follows the same sshuttle path. Phone
-configuration receives only DNS addresses for IP families assigned to that
-peer.
+There is no local DNS forwarder. When DNS is enabled, phone configurations name
+the explicit upstream IP directly. That address must be inside selected routes
+and its family must exist on every peer, so queries use the same WireGuard,
+TPROXY, and SSH path as other UDP traffic.
 
-IPv4-only, IPv6-only, and dual-stack peers and routes are supported. IPv6 also
-requires working host addressing, Docker IPv6 port publication, reachability
-to the SSH endpoint, and target-network IPv6 access. IPv6 is never silently
-disabled.
+The sandbox separately needs bootstrap name resolution when `ssh.host` is a
+hostname. A host loopback resolver cannot be reached from the namespace, so the
+launcher mounts systemd-resolved's uplink resolver file when present, otherwise
+the resolved host `/etc/resolv.conf`. This data is read-only and is never sent
+to phone peers.
 
-## Lifecycle
+IPv4-only, IPv6-only, and dual-stack routed traffic is supported. IPv6 target
+traffic requires peer/gateway addressing, an IPv6 route, and remote target
+access. An IPv6 outer WireGuard endpoint additionally requires an exact IPv6
+host bind. IPv6 is never silently disabled.
 
-Startup first reconciles old owned runtime objects. It installs the fail-closed
-nftables forward policy while `wg0` is down, validates remote Python, prepares
-WireGuard and policy routing, waits for sshuttle (and DNS when enabled), and
-activates `wg0` last. Postconditions are checked before readiness is published.
-Failure triggers best-effort cleanup of every independent effect. Shutdown
-stops dnsmasq and sshuttle, removes owned nftables and policy routing, deletes
-`wg0`, and removes volatile status. The container namespace is the final
-isolation and cleanup boundary.
+## Lifecycle and recovery
+
+Startup reconciles owned namespace objects, installs the drop policy while
+`wg0` is down, verifies remote Python, prepares WireGuard/routing/sshuttle, and
+activates `wg0` last. Readiness is published only after postcondition checks.
+Status is a bounded, secret-free atomic snapshot.
+
+Permanent validation failures stop immediately. Classified transient failures
+publish `retrying` and exit with status 75; systemd alone retries that status
+within fixed limits. The host waits through these attempts instead of treating
+the first temporary failure as final.
+Shutdown attempts every independent cleanup step. Destroying the private
+namespace is the final cleanup boundary, so host routing and firewall state are
+never involved.

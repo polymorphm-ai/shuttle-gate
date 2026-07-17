@@ -1,8 +1,8 @@
 """Native nftables transparent-proxy method for sshuttle.
 
 sshuttle 1.3.2 provides the TCP/UDP proxy engine but its upstream TPROXY
-method programs a legacy firewall frontend.  The runtime image replaces that
-method module with this implementation, which uses only native ``nft`` rules.
+method programs a legacy firewall frontend.  The runtime injects this method
+module in memory before sshuttle starts, and uses only native ``nft`` rules.
 """
 
 from __future__ import annotations

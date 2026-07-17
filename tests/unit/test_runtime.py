@@ -13,18 +13,17 @@ from typing import Any, cast
 import pytest
 
 import shuttle_gate.runtime as runtime_module
-from shuttle_gate.compose import prepare_launch
 from shuttle_gate.config import ProjectConfig
-from shuttle_gate.errors import RuntimeFailure
-from shuttle_gate.files import InstancePaths, atomic_write_json
+from shuttle_gate.errors import RuntimeFailure, TransientRuntimeFailure
+from shuttle_gate.files import InstancePaths, atomic_write, atomic_write_json
 from shuttle_gate.keys import generate_missing_keys
+from shuttle_gate.launch import prepare_launch
 from shuttle_gate.runner import CommandResult
 from shuttle_gate.runtime import (
     REMOTE_PYTHON_CHECK_CODE,
     REMOTE_PYTHON_CHECK_SCRIPT,
     GatewayRuntime,
     _stop_process,
-    dnsmasq_arguments,
     doctor_checks,
     healthcheck,
     nft_filter,
@@ -157,24 +156,6 @@ def test_sshuttle_target_brackets_ipv6_remote() -> None:
     assert sshuttle_target(config) == "tester@[2001:db8::22]:2222"
 
 
-def test_dnsmasq_is_bound_only_to_gateway_addresses(config: ProjectConfig) -> None:
-    rendered = " ".join(dnsmasq_arguments(config))
-
-    assert "--listen-address=10.77.0.1,fd77::1" in rendered
-    assert "--no-resolv" in rendered
-    assert "--server=fd20:1234::53" in rendered
-    assert "log-queries" not in rendered
-
-
-def test_dnsmasq_rejects_disabled_configuration() -> None:
-    data = config_data()
-    data["dns"] = {"enabled": False}
-    config = ProjectConfig.model_validate(data)
-
-    with pytest.raises(ValueError, match="disabled"):
-        dnsmasq_arguments(config)
-
-
 def test_nft_filter_drops_every_uncaptured_forward(config: ProjectConfig) -> None:
     rendered = nft_filter(config)
 
@@ -212,20 +193,69 @@ def test_runtime_cleanup_continues_after_an_independent_failure(
     assert ("ip", "-4", "route", "flush", "table", "100") in commands
 
 
-def test_runtime_paths_honor_container_overrides(
+def test_namespace_sysctls_are_fixed_and_failure_is_fatal(
+    config: ProjectConfig,
+    instance: InstancePaths,
+    tmp_path: Path,
+) -> None:
+    sysctls = tmp_path / "sys"
+    values = (
+        "net/ipv4/conf/all/src_valid_mark",
+        "net/ipv4/ip_forward",
+        "net/ipv6/conf/all/forwarding",
+    )
+    for relative in values:
+        path = sysctls / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("0\n", encoding="ascii")
+    gateway = GatewayRuntime(config, instance, tmp_path / "runtime", sysctl_root=sysctls)
+
+    gateway._configure_namespace()
+
+    assert all((sysctls / relative).read_text(encoding="ascii") == "1\n" for relative in values)
+
+    ipv4_data = config_data()
+    ipv4_data["wireguard"]["gateway_addresses"] = ["10.77.0.1/24"]
+    for peer in ipv4_data["wireguard"]["peers"]:
+        peer["addresses"] = [address for address in peer["addresses"] if ":" not in address]
+    ipv4_data["routing"]["networks"] = ["10.0.0.0/8"]
+    ipv4_data["dns"] = {"enabled": False}
+    ipv4 = ProjectConfig.model_validate(ipv4_data)
+    ipv4_sysctls = tmp_path / "ipv4-sys"
+    for relative in values[:2]:
+        path = ipv4_sysctls / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("0\n", encoding="ascii")
+    GatewayRuntime(
+        ipv4,
+        instance,
+        tmp_path / "ipv4-runtime",
+        sysctl_root=ipv4_sysctls,
+    )._configure_namespace()
+
+    gateway.sysctl_root = tmp_path / "missing"
+    with pytest.raises(RuntimeFailure, match="sysctl"):
+        gateway._configure_namespace()
+
+
+def test_runtime_paths_honor_sandbox_overrides(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     monkeypatch.setenv("SHUTTLE_GATE_CONFIG", str(tmp_path / "custom.yaml"))
     monkeypatch.setenv("SHUTTLE_GATE_STATE", str(tmp_path / "state"))
     monkeypatch.setenv("SHUTTLE_GATE_RUNTIME", str(tmp_path / "runtime"))
+    monkeypatch.setenv("SHUTTLE_GATE_LAUNCH", str(tmp_path / "launch.json"))
+    monkeypatch.setenv("SHUTTLE_GATE_BUNDLE", str(tmp_path / "application.pyz"))
 
-    config_path, paths, runtime_dir = runtime_paths()
+    config_path, paths, runtime_dir, launch_path, bundle_path = runtime_paths()
 
     assert config_path == tmp_path / "custom.yaml"
     assert paths.state == tmp_path / "state"
     assert paths.secrets == Path("/secrets")
     assert runtime_dir == tmp_path / "runtime"
+    assert launch_path == tmp_path / "launch.json"
+    assert bundle_path == tmp_path / "application.pyz"
 
 
 def test_wireguard_and_policy_setup_use_exact_dual_stack_commands(
@@ -261,7 +291,6 @@ def test_start_writes_ready_status_and_rolls_back_on_failure(
     runner = FakeRunner()
     generate_missing_keys(config, instance, runner)
     sshuttle = FakeProcess(pid=201)
-    dnsmasq = FakeProcess(pid=202)
     monkeypatch.setattr(runtime_module, "remote_python_check", lambda _config, _runner: None)
     monkeypatch.setattr(runtime_module, "resolve_ssh_addresses", lambda _config: ("192.0.2.1",))
 
@@ -269,15 +298,21 @@ def test_start_writes_ready_status_and_rolls_back_on_failure(
         gateway.sshuttle = as_process(sshuttle)
 
     monkeypatch.setattr(GatewayRuntime, "_start_sshuttle", start_sshuttle)
-    monkeypatch.setattr(subprocess, "Popen", lambda _args: as_process(dnsmasq))
-    gateway = GatewayRuntime(config, instance, tmp_path / "runtime", runner=runner)
+    gateway = GatewayRuntime(
+        config,
+        instance,
+        tmp_path / "runtime",
+        runner=runner,
+        launch_id="1" * 32,
+    )
 
     gateway.start()
 
     status = read_runtime_status(tmp_path / "runtime")
     assert status["state"] == "ready"
+    assert status["schema_version"] == 2
+    assert status["launch_id"] == "1" * 32
     assert status["sshuttle_pid"] == 201
-    assert status["dnsmasq_pid"] == 202
     commands = [call[0] for call in runner.calls]
     assert commands.index(("nft", "--file", "-")) < commands.index(
         ("ip", "link", "add", "dev", "wg0", "type", "wireguard")
@@ -307,11 +342,6 @@ def test_supervision_detects_child_exit_and_stop_signal(
     gateway.sshuttle = as_process(FakeProcess(returncode=4))
     monkeypatch.setattr(gateway.stopping, "wait", lambda _timeout: False)
     with pytest.raises(RuntimeFailure, match="sshuttle"):
-        gateway.supervise()
-
-    gateway.sshuttle = as_process(FakeProcess())
-    gateway.dnsmasq = as_process(FakeProcess(returncode=3))
-    with pytest.raises(RuntimeFailure, match="dnsmasq"):
         gateway.supervise()
 
     gateway.request_stop(15, None)
@@ -384,7 +414,7 @@ def test_stop_process_escalates_after_timeout() -> None:
 
 
 def test_read_runtime_status_is_bounded(tmp_path: Path) -> None:
-    atomic_write_json(tmp_path / "status.json", {"schema_version": 1, "state": "ready"})
+    atomic_write_json(tmp_path / "status.json", {"schema_version": 2, "state": "ready"})
     assert read_runtime_status(tmp_path)["state"] == "ready"
 
     (tmp_path / "status.json").write_bytes(b"x" * 65537)
@@ -436,11 +466,9 @@ def test_healthcheck_validates_processes_and_interface(
     atomic_write_json(
         tmp_path / "status.json",
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "state": "ready",
             "sshuttle_pid": os.getpid(),
-            "dnsmasq_pid": None,
-            "dns_enabled": False,
         },
     )
     fake = FakeRunner()
@@ -455,16 +483,16 @@ def test_healthcheck_validates_processes_and_interface(
     monkeypatch.setattr(runtime_module, "SubprocessRunner", lambda: fake)
     assert healthcheck() == 0
 
-    atomic_write_json(tmp_path / "status.json", {"schema_version": 1, "state": "stopping"})
+    atomic_write_json(tmp_path / "status.json", {"schema_version": 2, "state": "stopping"})
     assert healthcheck() == 1
     atomic_write_json(
         tmp_path / "status.json",
-        {"schema_version": 1, "state": "ready", "sshuttle_pid": "bad"},
+        {"schema_version": 2, "state": "ready", "sshuttle_pid": "bad"},
     )
     assert healthcheck() == 1
 
 
-def test_runtime_status_maps_public_keys_without_exposing_secrets(
+def test_runtime_status_snapshot_maps_public_keys_without_exposing_secrets(
     config: ProjectConfig,
     instance: InstancePaths,
     tmp_path: Path,
@@ -472,10 +500,6 @@ def test_runtime_status_maps_public_keys_without_exposing_secrets(
 ) -> None:
     generate_missing_keys(config, instance, FakeRunner())
     runtime_dir = tmp_path / "runtime"
-    atomic_write_json(runtime_dir / "status.json", {"schema_version": 1, "state": "ready"})
-    monkeypatch.setenv("SHUTTLE_GATE_CONFIG", str(instance.config))
-    monkeypatch.setenv("SHUTTLE_GATE_STATE", str(instance.state))
-    monkeypatch.setenv("SHUTTLE_GATE_RUNTIME", str(runtime_dir))
     phone_public = (instance.peer_dir("phone") / "public.key").read_text().strip()
     dump = (
         "server-private\tserver-public\t51820\toff\n"
@@ -487,7 +511,16 @@ def test_runtime_status_maps_public_keys_without_exposing_secrets(
     fake.results[("wg", "show", "wg0", "dump")] = CommandResult(
         ("wg", "show", "wg0", "dump"), 0, dump, ""
     )
-    monkeypatch.setattr(runtime_module, "SubprocessRunner", lambda: fake)
+    gateway = GatewayRuntime(
+        config,
+        instance,
+        runtime_dir,
+        runner=fake,
+        launch_id="2" * 32,
+        sshuttle=as_process(FakeProcess(pid=os.getpid())),
+    )
+    gateway._write_status("ready")
+    monkeypatch.setenv("SHUTTLE_GATE_RUNTIME", str(runtime_dir))
 
     value = runtime_status()
 
@@ -505,7 +538,17 @@ def test_run_gateway_always_cleans_runtime(
 ) -> None:
     events: list[str] = []
     generate_missing_keys(config, instance, FakeRunner())
-    prepare_launch(config, instance)
+    bundle = tmp_path / "application.pyz"
+    launch = tmp_path / "launch.json"
+    atomic_write(bundle, "application\n", 0o600)
+    prepare_launch(
+        config,
+        instance,
+        launch,
+        bundle,
+        instance_id="1" * 20,
+        unit_name=f"shuttle-gate-{'1' * 20}.service",
+    )
 
     class FakeGateway:
         def __init__(self, **_kwargs: Any) -> None:
@@ -523,15 +566,37 @@ def test_run_gateway_always_cleans_runtime(
         def cleanup(self) -> None:
             events.append("cleanup")
 
+        def _write_status(
+            self,
+            state: str,
+            ignore_errors: bool = False,
+            error: str | None = None,
+        ) -> None:
+            del ignore_errors, error
+            events.append(f"status:{state}")
+
     monkeypatch.setattr(
-        runtime_module, "runtime_paths", lambda: (instance.config, instance, tmp_path)
+        runtime_module,
+        "runtime_paths",
+        lambda: (instance.config, instance, tmp_path, launch, bundle),
     )
     monkeypatch.setattr(runtime_module, "load_config", lambda _path: config)
     monkeypatch.setattr(runtime_module, "GatewayRuntime", FakeGateway)
     monkeypatch.setattr(signal, "signal", lambda *_args: None)
 
     assert run_gateway() == 0
-    assert events == ["start", "supervise", "cleanup"]
+    assert events == ["start", "supervise", "cleanup", "status:stopped"]
+
+    class TransientGateway(FakeGateway):
+        def supervise(self) -> None:
+            events.append("supervise")
+            raise TransientRuntimeFailure("retry safely")
+
+    events.clear()
+    monkeypatch.setattr(runtime_module, "GatewayRuntime", TransientGateway)
+    with pytest.raises(TransientRuntimeFailure, match="retry safely"):
+        run_gateway()
+    assert events == ["start", "supervise", "cleanup", "status:retrying"]
 
 
 def test_doctor_checks_clean_up_tproxy_chains(config: ProjectConfig) -> None:

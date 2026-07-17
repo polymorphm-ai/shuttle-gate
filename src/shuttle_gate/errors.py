@@ -21,3 +21,7 @@ class CommandError(ShuttleGateError):
 
 class RuntimeFailure(ShuttleGateError):
     """Gateway startup or supervision failed."""
+
+
+class TransientRuntimeFailure(RuntimeFailure):
+    """A classified runtime failure that may be retried safely."""

@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Start with these commands:
+Start with:
 
 ```console
 ./shuttle-gate config validate
@@ -9,93 +9,110 @@ Start with these commands:
 ./shuttle-gate logs --tail 200
 ```
 
-## Docker or build fails
+## uv or a runtime program is unavailable
 
-Confirm the Docker daemon is running and your user can access it. The first
-build needs registry and package-index access; later runs use Docker's build
-cache. The host launcher does not install missing components.
+Install the runtime packages listed in the README. The first launch may need
+network access while uv obtains a compatible Python 3.14+ interpreter and locked
+packages. Later runs use uv's user cache. Do not create a project virtual
+environment or substitute unreviewed package versions.
 
-`docker compose config --quiet` checks the static file. Generated port bindings
-are created by `./shuttle-gate up` after full local validation.
+`doctor` reports each missing command. In particular, the executable supplied
+by the `passt` package must also provide pasta mode, and bubblewrap must permit
+unprivileged user namespaces.
 
-## WireGuard or TPROXY doctor check fails
+## The systemd user service cannot start
 
-The Linux host kernel must provide WireGuard, nftables socket matching, TPROXY,
-IPv4 policy routing, and IPv6 policy routing when IPv6 is configured. The
-doctor container cannot install or load unsupported host kernel features. Use a
-kernel supplied and approved by the host administrator.
+Run from a normal login session and confirm `XDG_RUNTIME_DIR` exists and
+`systemctl --user is-system-running` can reach the user manager. The toolkit
+does not start a user manager or enable lingering.
 
-The project uses native nftables only. Installing a legacy compatibility tool
-does not fix a failed doctor check.
+Inspect `./shuttle-gate logs`. A transient unit may retry only classified
+network/SSH failures; configuration and integrity errors deliberately remain
+failed until corrected. `./shuttle-gate down` is safe when the unit is already
+stopped.
+
+## Namespace, WireGuard, or TPROXY checks fail
+
+The host must allow unprivileged user namespaces and provide kernel WireGuard,
+nftables socket matching/TPROXY, IPv4 policy routing, and IPv6 policy routing
+when configured. pasta and bubblewrap cannot add missing kernel features.
+
+The project uses current native nftables interfaces only. A legacy firewall
+compatibility package does not repair a failed check.
+
+The configured port must be at or above
+`/proc/sys/net/ipv4/ip_unprivileged_port_start`. Every bind address must already
+exist on the host. The toolkit will not add addresses or firewall rules.
 
 ## SSH check fails
 
-- Confirm `secrets/id_ed25519` is mode `0600`.
-- Confirm the public key is authorized for the configured user.
-- Confirm `secrets/known_hosts` contains the verified key for the exact host and
-  port.
-- Test whether server policy permits a normal non-interactive SSH session.
-- Confirm the configured remote Python executable exists and is Python 3.9+.
+- Confirm the private key is mode `0600`.
+- Confirm the public key is already authorized for the configured user.
+- Verify `known_hosts` for the exact host and port through a trusted channel.
+- Test whether server policy permits non-interactive public-key SSH.
+- Confirm the configured remote executable is Python 3.9+.
 
-Do not fix this by asking the toolkit to change the server. Server-side key or
-policy changes must be explicit actions by an authorized administrator.
+For an SSH hostname, confirm the host's uplink resolver file contains reachable
+non-loopback nameservers. The sandbox prefers
+`/run/systemd/resolve/resolv.conf`; a stub-only `127.0.0.53` resolver cannot be
+contacted across a private network namespace.
+
+Do not ask the toolkit to change the server. Key authorization or policy changes
+must be separate actions by an authorized administrator.
 
 ## Phone has no WireGuard handshake
 
-- `bind_addresses` must exist on the laptop.
-- `endpoint_host` must resolve to an address the phone can reach.
-- The configured UDP port must pass the laptop firewall, Wi-Fi client isolation,
-  upstream NAT, and any mobile network filtering.
-- The phone must use the newest generated configuration after a key rotation.
+- Confirm every bind address still belongs to the laptop.
+- Confirm `endpoint_host` reaches that laptop address from the phone.
+- Permit the exact UDP port through operator-managed firewall, Wi-Fi isolation,
+  NAT, and mobile-network policy.
+- Re-import the newest phone configuration after any key change.
 
-## Handshake works, but target TCP does not
+Pasta exposes only those exact UDP sockets. It does not automatically publish
+TCP, reverse traffic, gateway addresses, or additional UDP ports.
 
-Check that the destination is inside a configured route and not the SSH server
-itself. Confirm the SSH account can reach the target from the remote server.
-Review logs for sshuttle startup or connection errors. Ping is not a valid test;
-ICMP is deliberately unsupported. Use an actual TCP client such as a browser or
-SSH app.
+## Handshake works, but routed traffic fails
 
-## DNS does not work
+The destination must be inside a configured route and must not be the SSH server
+itself. Confirm the remote SSH account can reach the target. Review logs for
+sshuttle failures. Ping is not a valid test because ICMP is unsupported; use a
+real TCP or UDP client.
 
-The DNS upstream must be one explicit IP covered by routing. It must accept UDP
-queries from the SSH server's network position. Re-import the phone config after
-enabling DNS because the local gateway DNS address is part of that config.
+For DNS, the configured upstream must be an explicit IP covered by routing and
+reachable from the SSH server. The phone queries it directly through the tunnel;
+there is no local forwarder and no imported host search domain. Re-import the
+phone configuration after changing DNS.
 
-The host resolver and search domains are not copied automatically. Query names
-exactly as the selected upstream expects them.
+Only unicast UDP is captured. Broadcast/multicast discovery, ICMP, raw
+protocols, unusually long idle flows, very large datagrams, and applications
+that depend on exact source-address behavior may not work through sshuttle.
 
-## UDP application does not work
+## IPv6 fails
 
-Only unicast UDP is captured. Broadcast discovery, multicast discovery, raw
-protocols, and ICMP do not traverse the gateway. sshuttle maintains temporary
-UDP flow mappings, so applications that depend on unusually long idle flows,
-source-address behavior, fragmentation, or very large datagrams may fail even
-when simple UDP and DNS work.
+Check each layer: an exact reachable IPv6 bind/endpoint on the laptop, IPv6
+gateway and peer addresses, an IPv6 route, and reachability from the SSH server
+to the target. Pasta receives an explicit IPv6 UDP forward. No IPv4 fallback is
+performed for IPv6 destinations.
 
-## IPv6 does not work
+## State or shutdown was interrupted
 
-Check all four layers independently: a reachable IPv6 WireGuard endpoint on the
-laptop, Docker IPv6 port publication, IPv6 addresses/routes for the peer, and
-IPv6 reachability from the SSH server to the target. No IPv4 fallback is
-performed for an IPv6 route.
+Run `./shuttle-gate down`, then repeat the operation. Namespace destruction
+removes all runtime networking; persistent keys are not deleted. State writers
+reconcile staging directories and publish only through atomic `state/current`.
+Never hand-edit a generation or remove lock files.
 
-## Stale state or interrupted shutdown
+Stop the gateway before moving or renaming the repository. The resolved checkout
+path identifies its transient unit and XDG runtime directory; a moved checkout
+is intentionally treated as a separate instance.
 
-Run `./shuttle-gate down`, then retry the failed command. Runtime networking
-lives in the container namespace and is destroyed with the container.
-Persistent key state is never deleted by `down`.
+Reuse the printed operation ID when a key command's outcome is unknown. A busy
+state means the gateway or another writer owns the lock; stop it or wait. If
+`up` reports changed prepared inputs, use `down` and then `up` so a fresh
+manifest can be published.
 
-State writers reconcile abandoned staging directories and publish only through
-the atomic `state/current` pointer. Do not repair a generation by editing it.
-An installation with the older direct `state/server` and `state/peers` layout
-is copied, validated, and atomically migrated by `keys generate`; its old
-directories are removed only after the new generation is durable.
-If an interrupted key command printed an operation ID, repeat the same command
-with `--operation-id ID`; this resumes recovery or returns its durable receipt.
-A “persistent state is busy” message means the gateway or another writer still
-holds the lock. Stop it or wait; do not remove lock files.
+## Docker integration tests fail
 
-If `up` says its prepared inputs changed, run `down` before `up`. This is a
-fail-closed check for configuration, credential, state-generation, or override
-drift. Use `keys prune --yes` only after reviewing peer names removed from YAML.
+Docker is not part of production. It is required only by
+`./test --integration`, after the native pasta/bubblewrap tests pass. Confirm the
+daemon and Compose plugin are available. The disposable service runs as fixed
+`0:0` inside its isolated test environment; host UID/GID values are not read.

@@ -1,80 +1,82 @@
 # Security and Isolation
 
-## Trust boundaries
+## Trust boundaries and secrets
 
 The operator controls this repository, local configuration, phone peers, and
-the SSH account. Target-network policy and SSH-server policy still apply. Use
-the gateway only with authorization from the owners of those systems.
+the SSH account. Target-network and SSH-server policy still apply. Use the
+gateway only with authorization.
 
-The phone configuration, WireGuard private/preshared keys, and SSH private key
-are secrets. They are excluded by `.gitignore`, stored in mode-restricted local
-paths, mounted read-only into the runtime, and never copied into an image.
-Generated WireGuard key text is validated before it can enter a configuration.
-State generations and operation receipts are mode-restricted; receipts contain
-identifiers, paths, hashes, and non-secret results, never key material.
+Phone configurations, WireGuard private/preshared keys, and the SSH private key
+are secrets. They are ignored by Git, stored in mode-restricted paths, mounted
+read-only at runtime, and never copied into the application bundle or test
+image. Operation receipts contain identifiers, paths, hashes, and non-secret
+results only.
 
 ## Clean host contract
 
-The host needs Docker, Compose, `uv`, and a supported Python version. It does not
-need a Python environment, WireGuard tools, sshuttle, dnsmasq, nftables user
-tools, or test packages. Docker images, containers, networks, and published
-ports are expected Docker-managed effects. Project-local `config.yaml`,
-`secrets/`, and `state/` are intentional persistent data.
+Production requires only the system tools listed in the README. uv stores its
+managed Python and locked packages in the normal user cache. Intentional project
+state is limited to `config.yaml`, `secrets/`, and `state/`; transient manifests,
+the immutable code bundle, locks, and status live below `XDG_RUNTIME_DIR`.
 
-The launcher uses an offline, no-cache `uv run --script` shebang with an empty
-dependency list. Application dependency resolution and all quality checks occur
-inside locked Docker images.
+The toolkit creates no host interface, route, nftables rule, DNS process,
+container, or root-owned file. ID 0 inside the pasta user namespace maps to the
+unprivileged caller. Do not clean the uv cache while a gateway is active; stop
+the service first so a later restart can reproduce its locked environment.
+
+Docker and Compose are testing dependencies only. Integration containers use
+fixed IDs rather than importing host UID/GID values.
+
+## Runtime boundaries
+
+The transient systemd user unit supplies bounded restart and resource policy.
+It retries only exit status 75, reserved for classified transient failures.
+`pasta` creates the private user/network namespace with automatic TCP, reverse
+TCP/UDP, and gateway mappings disabled; only validated WireGuard UDP sockets are
+forwarded from exact host addresses.
+
+Inside that namespace, bubblewrap drops all capabilities and restores only
+namespace-local `CAP_NET_ADMIN`. The project tree is absent. System files,
+configuration, credentials, the state tree, code bundle, and launch manifest
+are read-only. The runtime resolves and locks one immutable state generation.
+Only that exact lock file and a volatile output directory are writable. Digests
+and schema bounds are checked both before service creation and inside the
+sandbox.
 
 ## Remote SSH server contract
 
-The toolkit does not install packages, copy files, edit `authorized_keys`, alter
-firewall/routing, start services, or leave a persistent process on the SSH
-server. sshuttle starts a temporary Python process over the existing SSH
-session; it exits with that session. Normal SSH authentication/audit records are
-an unavoidable server-side observation.
+The toolkit never installs packages, copies files, edits `authorized_keys`,
+changes firewall/routing, starts services, or leaves a persistent process on
+the SSH server. sshuttle starts a temporary Python process through the existing
+session; it exits with that session. Normal authentication and audit records are
+unavoidable observations.
 
-`./shuttle-gate ssh-key instructions` prints commands but executes neither of
-them. If the operator runs `ssh-copy-id`, that explicit setup action changes the
-remote account. If remote immutability must be absolute, use a key already
-authorized by the server owner instead.
-
-## Container permissions
-
-The gateway drops all capabilities, then adds only:
-
-- `NET_ADMIN` for WireGuard, routes, transparent sockets, and nftables;
-- `NET_BIND_SERVICE` for the private DNS listener on port 53;
-- `DAC_READ_SEARCH` to read host-owned credentials mounted read-only.
-
-The root filesystem is read-only. `/run` and `/tmp` are tmpfs. Configuration,
-secrets, and persistent state are read-only in the gateway. `no-new-privileges`
-is enabled. The VPN port is published only on the exact configured host
-addresses; wildcard binds are rejected.
-
-The gateway starts only from a launch manifest whose configuration,
-credentials, persistent generation, and generated Compose override still match
-their prepared digests. A changed or partial input fails before network setup.
+`ssh-key instructions` prints setup commands but executes none. If an authorized
+operator runs `ssh-copy-id`, that separate action changes the remote account. If
+absolute immutability is required, use a key already authorized by the owner.
 
 ## Network policy
 
-Native nftables captures only TCP and UDP for declared routes. SSH recursion,
-peer networks, multicast, and limited broadcast are excluded. The forward path
-defaults to drop, preventing a transparent-proxy failure from becoming direct
-Docker egress. ICMP, raw protocols, multicast, broadcast, and Layer 2 are not
-forwarded.
+Native nftables captures only TCP/UDP inside declared routes. The SSH endpoint,
+peer networks, multicast, and limited broadcast are excluded. Forwarding
+defaults to drop, so proxy failure cannot become direct pasta egress. The
+toolkit never edits the host firewall; external reachability remains an explicit
+operator decision.
 
-Selected routing is recommended. Full routing expands the confidentiality and
-availability impact of the laptop, SSH account, and target server. It still
-does not provide a general packet VPN.
+Phone DNS uses one configured upstream through the ordinary routed UDP path. No
+host resolver data or DNS forwarder is exposed to peers. The sandbox reads a
+host uplink resolver file only to bootstrap an SSH hostname; it is read-only and
+private to the namespace. ICMP, raw protocols, multicast, broadcast, and Layer
+2 are unsupported.
+
+Selected routing minimizes impact. Full routing expands the confidentiality and
+availability trust placed in the laptop, SSH account, and remote server, while
+still not providing a packet-level VPN.
 
 ## Operational guidance
 
-- Verify SSH host keys out of band; never trust raw `ssh-keyscan` output alone.
-- Bind only to a trusted LAN/VPN address and keep the host firewall restrictive.
-- Use one WireGuard peer per device; rotate only the lost device when possible.
-- Treat `phone.conf`, status endpoints, and logs as operator data. Status omits
-  private and preshared keys but includes public keys, endpoints, and counters.
-- Run `down` before changing sensitive routing and re-run `doctor` after kernel,
-  Docker, SSH, or IPv6 changes.
-- Keep printed operation IDs until key commands finish. Reuse the same ID only
-  to reconcile an interrupted command; a new intentional rotation gets a new ID.
+- Verify SSH host keys out of band and bind only trusted laptop addresses.
+- Use one WireGuard peer per device and rotate only a lost peer where possible.
+- Re-run `doctor` after kernel, systemd, namespace-tool, SSH, or IPv6 changes.
+- Keep operation IDs until completion; reuse one only to reconcile its operation.
+- Treat phone configurations, status, and logs as operator-sensitive data.

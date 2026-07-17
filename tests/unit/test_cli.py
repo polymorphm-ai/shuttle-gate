@@ -8,7 +8,6 @@ import yaml
 from typer.testing import CliRunner
 
 import shuttle_gate.cli as cli
-from shuttle_gate.config import ProjectConfig
 from shuttle_gate.errors import ShuttleGateError
 from shuttle_gate.files import InstancePaths
 
@@ -82,8 +81,7 @@ def test_config_keys_peers_and_phone_workflow(
     assert mutually_exclusive.exit_code == 2
 
 
-def test_rotation_pruning_and_prepare_commands(
-    config: ProjectConfig,
+def test_rotation_and_pruning_commands(
     instance: InstancePaths,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -98,16 +96,6 @@ def test_rotation_pruning_and_prepare_commands(
     orphan.mkdir(mode=0o700)
     assert RUNNER.invoke(cli.app, ["keys", "prune", "--yes"]).exit_code == 0
     assert not orphan.exists()
-
-    prepared = RUNNER.invoke(cli.app, ["prepare"])
-    assert prepared.exit_code == 0
-    assert instance.runtime_dir().joinpath("launch.json").is_file()
-    assert (
-        config.project
-        in json.loads(instance.runtime_dir().joinpath("launch.json").read_text(encoding="utf-8"))[
-            "project"
-        ]
-    )
 
 
 def test_ssh_key_commands_only_generate_locally_and_print_manual_steps(
@@ -141,7 +129,7 @@ def test_doctor_runtime_health_status_and_version_adapters(
     assert RUNNER.invoke(cli.app, ["health"]).exit_code == 1
 
     status = {
-        "schema_version": 1,
+        "schema_version": 2,
         "state": "ready",
         "health": "ok",
         "wireguard_interface": "wg0",

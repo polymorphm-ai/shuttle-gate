@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from hashlib import sha256
-from ipaddress import IPv6Address, ip_address, ip_network
+from ipaddress import IPv6Address, ip_address
 
 from .config import PeerConfig, ProjectConfig, effective_routes
 
@@ -24,20 +24,9 @@ def endpoint(config: ProjectConfig) -> str:
 
 
 def peer_allowed_routes(config: ProjectConfig) -> tuple[str, ...]:
-    """Return deterministic phone AllowedIPs, including local DNS endpoints."""
+    """Return deterministic phone AllowedIPs."""
 
     networks = list(effective_routes(config))
-    if config.dns.enabled:
-        for gateway in config.wireguard.gateway_addresses:
-            host_route = ip_network(
-                f"{gateway.ip}/{'32' if gateway.version == 4 else '128'}",
-                strict=False,
-            )
-            if not any(
-                route.version == host_route.version and host_route.network_address in route
-                for route in networks
-            ):
-                networks.append(host_route)
     return tuple(str(network) for network in networks)
 
 
@@ -82,14 +71,8 @@ def render_phone_config(
         f"PrivateKey = {peer_private_key}",
         "Address = " + ", ".join(str(address) for address in peer.addresses),
     ]
-    if config.dns.enabled:
-        gateways = [
-            str(gateway.ip)
-            for gateway in config.wireguard.gateway_addresses
-            if any(address.version == gateway.version for address in peer.addresses)
-        ]
-        if gateways:
-            lines.append("DNS = " + ", ".join(gateways))
+    if config.dns.enabled and config.dns.upstream is not None:
+        lines.append(f"DNS = {config.dns.upstream}")
     lines.extend(
         [
             "",
@@ -116,7 +99,7 @@ def phone_fingerprint(
     value = {
         "addresses": [str(address) for address in peer.addresses],
         "allowed_routes": list(peer_allowed_routes(config)),
-        "dns": config.dns.enabled,
+        "dns": str(config.dns.upstream) if config.dns.enabled else None,
         "endpoint": endpoint(config),
         "keepalive": peer.persistent_keepalive_seconds,
         "peer_public_key": peer_public_key,

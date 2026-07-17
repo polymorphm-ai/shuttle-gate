@@ -1,4 +1,4 @@
-"""Container-side operator and runtime CLI."""
+"""Sandboxed operator and runtime CLI."""
 
 from __future__ import annotations
 
@@ -11,14 +11,13 @@ from typing import Annotated, NoReturn
 import typer
 
 from . import __version__
-from .compose import prepare_launch
 from .config import ProjectConfig, load_config
-from .errors import ShuttleGateError
+from .errors import ShuttleGateError, TransientRuntimeFailure
 from .files import (
     InstancePaths,
     atomic_write,
-    container_secret_path,
     ensure_private_directory,
+    sandbox_secret_path,
     validate_ssh_files,
 )
 from .keys import (
@@ -87,8 +86,8 @@ def validate_config() -> None:
 
     paths = instance_paths()
     config = configuration(paths)
-    container_secret_path(config.ssh.identity_file)
-    container_secret_path(config.ssh.known_hosts_file)
+    sandbox_secret_path(config.ssh.identity_file)
+    sandbox_secret_path(config.ssh.known_hosts_file)
     with state_lock(paths, exclusive=True, blocking=False):
         recover_ssh_key_transaction(config, paths)
         validate_ssh_files(config, paths.config)
@@ -209,18 +208,9 @@ def phone_config(
     typer.echo(str(source))
 
 
-@app.command("prepare", hidden=True)
-def prepare() -> None:
-    """Write non-secret launch metadata after complete validation."""
-
-    paths = instance_paths()
-    override, manifest = prepare_launch(configuration(paths), paths)
-    typer.echo(f"prepared {override} and {manifest}")
-
-
 @app.command("doctor")
 def doctor() -> None:
-    """Check disposable kernel, SSH, and remote-Python prerequisites."""
+    """Check rootless kernel, SSH, and remote-Python prerequisites."""
 
     paths = instance_paths()
     config = configuration(paths)
@@ -235,12 +225,17 @@ def doctor() -> None:
 def runtime_command() -> None:
     """Run the long-lived gateway."""
 
-    raise typer.Exit(run_gateway())
+    try:
+        result = run_gateway()
+    except TransientRuntimeFailure as exc:
+        typer.echo(f"shuttle-gate transient runtime error: {exc}", err=True)
+        raise typer.Exit(75) from None
+    raise typer.Exit(result)
 
 
 @app.command("health", hidden=True)
 def health_command() -> None:
-    """Docker health-check entrypoint."""
+    """Namespace-local health-check entrypoint."""
 
     raise typer.Exit(healthcheck())
 

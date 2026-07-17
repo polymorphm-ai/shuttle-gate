@@ -1,4 +1,4 @@
-"""Exercise the real container network namespace and host kernel primitives."""
+"""Exercise real disposable network namespaces and kernel primitives."""
 
 from __future__ import annotations
 
@@ -110,9 +110,12 @@ def test_kernel_wireguard_dual_stack_policy_routing_and_native_tproxy() -> None:
         cleanup(["ip", "link", "del", "dev", interface])
 
 
-def test_installed_sshuttle_method_is_the_native_implementation() -> None:
-    """Guard the image-time replacement of sshuttle's fixed method name."""
+def test_runtime_injects_native_method_without_modifying_sshuttle() -> None:
+    """Guard the in-memory replacement of sshuttle's fixed method name."""
 
+    from shuttle_gate.sshuttle_entry import install_native_method
+
+    install_native_method()
     from sshuttle.methods.tproxy import Method as InstalledMethod  # type: ignore[import-untyped]
 
     assert InstalledMethod is Method
