@@ -104,3 +104,7 @@ Other backend strings are rejected instead of silently changing behavior.
 After route, endpoint, DNS, peer, or key changes, regenerate phone configs.
 Startup rejects stale fingerprints so an old imported configuration is not used
 by accident.
+
+Run `down` before state-changing commands. Key generation and rotations print
+an operation ID before their first effect. If a command is interrupted, reuse
+that ID with `--operation-id`; use a fresh ID for a new intentional operation.

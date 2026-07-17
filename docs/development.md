@@ -60,6 +60,25 @@ and external postconditions agree.
 - Inject failure at every meaningful step boundary and test restart, retry,
   cleanup, and postcondition verification.
 
+Persistent WireGuard state follows one concrete protocol: build and validate a
+private `state/generations/.staging-*` tree, fsync it, rename it to its final
+generation name, then atomically replace `state/current`. Hold `.state.lock`
+across the complete operation. Readers must bind to the resolved generation
+while holding a shared lock; never read multiple files through a moving
+`current` pointer.
+
+Operations that intentionally produce a new value, such as key rotation, need
+a caller-visible operation ID. Store its receipt in the same atomic publication
+as the effect. The SSH private/public pair is the exception to the generation
+tree: keep its durable transaction journal until both files are verified and a
+state receipt is durable. Recovery must derive every owned path from validated
+journal fields rather than trusting arbitrary paths from JSON.
+
+Runtime transitions are convergent rather than filesystem-atomic. Install the
+drop policy before exposing ingress, activate the WireGuard interface last,
+publish ready only after postcondition checks, attempt every independent cleanup
+step, and rely on namespace destruction as the final boundary.
+
 ## Implementation rules
 
 - Keep executables and options program-controlled. Pass subprocess arguments as

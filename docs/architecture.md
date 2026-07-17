@@ -33,6 +33,31 @@ The static Compose file defines separate roles:
 - `test`: no-network quality environment;
 - `integration-test`: opt-in disposable kernel test with only `NET_ADMIN`.
 
+## Persistent state and publication
+
+WireGuard keys, peer configurations, fingerprints, and completed operation
+receipts live in immutable directories below `state/generations/`. Writers copy
+the current generation into a private staging directory, apply the complete
+change, validate it, fsync files and directories, and atomically replace the
+`state/current` symlink. The old generation remains authoritative until that
+single publish step. Incomplete and unreferenced generations are reconciled by
+the next writer.
+
+A project `flock` serializes writers. Readers hold a shared lock while their
+generation is in use; the gateway holds it for its entire lifetime.
+Non-idempotent key rotations publish a request receipt in the same generation,
+so retrying an operation ID cannot rotate twice. The two-file SSH identity
+replacement uses a durable journal and backups, then records its request
+receipt before removing recovery data.
+
+Launch preparation writes an immutable, content-addressed Compose override and
+then atomically publishes `state/runtime/launch.json`. The manifest binds the
+configuration, state generation, SSH identity, known-hosts file, and override
+by SHA-256 digest. Both the dependency-free host launcher and gateway validate
+this plan. Concurrent `up` and `down` calls are serialized by a separate
+lifecycle lock; `up` resumes an already-running valid plan instead of preparing
+a conflicting one.
+
 ## Packet flow
 
 1. Kernel WireGuard authenticates a named peer and enforces its peer address.
@@ -75,9 +100,11 @@ disabled.
 
 ## Lifecycle
 
-Startup validates configuration, SSH files, generated fingerprints, remote
-Python, key material, WireGuard, policy routes, and nftables before reporting
-ready. Docker waits for the health check. Failure at any stage triggers cleanup.
-Shutdown stops dnsmasq and sshuttle, removes owned nftables and policy routing,
-deletes `wg0`, and removes volatile status. The container namespace is the final
+Startup first reconciles old owned runtime objects. It installs the fail-closed
+nftables forward policy while `wg0` is down, validates remote Python, prepares
+WireGuard and policy routing, waits for sshuttle (and DNS when enabled), and
+activates `wg0` last. Postconditions are checked before readiness is published.
+Failure triggers best-effort cleanup of every independent effect. Shutdown
+stops dnsmasq and sshuttle, removes owned nftables and policy routing, deletes
+`wg0`, and removes volatile status. The container namespace is the final
 isolation and cleanup boundary.

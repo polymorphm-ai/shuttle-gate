@@ -36,9 +36,9 @@ No host virtual environment or host network package is used.
 ./shuttle-gate status
 ```
 
-Import `state/peers/phone/phone.conf` into the WireGuard mobile app. This file
-contains private key material; transfer it through a trusted channel and
-delete extra copies.
+Import `state/current/peers/phone/phone.conf` into the WireGuard mobile app.
+This file contains private key material; transfer it through a trusted channel
+and delete extra copies.
 
 Stop the gateway with `./shuttle-gate down`. Use `./shuttle-gate logs` for
 startup diagnostics.

@@ -6,12 +6,14 @@ import shlex
 import signal
 import socket
 import subprocess
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
 import shuttle_gate.runtime as runtime_module
+from shuttle_gate.compose import prepare_launch
 from shuttle_gate.config import ProjectConfig
 from shuttle_gate.errors import RuntimeFailure
 from shuttle_gate.files import InstancePaths, atomic_write_json
@@ -64,6 +66,32 @@ class FakeProcess:
 
     def kill(self) -> None:
         self.killed = True
+
+
+class FailingCleanupRunner:
+    def __init__(self) -> None:
+        self.delegate = FakeRunner()
+        self.failed = False
+
+    def run(
+        self,
+        args: Sequence[str],
+        *,
+        input_text: str | None = None,
+        timeout: float = 30.0,
+        check: bool = True,
+        env: Mapping[str, str] | None = None,
+    ) -> CommandResult:
+        if not self.failed:
+            self.failed = True
+            raise RuntimeError("first cleanup command failed")
+        return self.delegate.run(
+            args,
+            input_text=input_text,
+            timeout=timeout,
+            check=check,
+            env=env,
+        )
 
 
 def as_process(process: FakeProcess) -> subprocess.Popen[bytes]:
@@ -170,6 +198,20 @@ def test_runtime_cleanup_is_idempotent(
     assert all(not check for _args, _input, check in runner.calls)
 
 
+def test_runtime_cleanup_continues_after_an_independent_failure(
+    config: ProjectConfig, instance: InstancePaths, tmp_path: Path
+) -> None:
+    runner = FailingCleanupRunner()
+    runtime = GatewayRuntime(config, instance, tmp_path / "run", runner=runner)
+
+    with pytest.raises(RuntimeFailure, match="cleanup was incomplete"):
+        runtime.cleanup()
+
+    commands = [call[0] for call in runner.delegate.calls]
+    assert ("ip", "link", "del", "dev", "wg0") in commands
+    assert ("ip", "-4", "route", "flush", "table", "100") in commands
+
+
 def test_runtime_paths_honor_container_overrides(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -236,6 +278,13 @@ def test_start_writes_ready_status_and_rolls_back_on_failure(
     assert status["state"] == "ready"
     assert status["sshuttle_pid"] == 201
     assert status["dnsmasq_pid"] == 202
+    commands = [call[0] for call in runner.calls]
+    assert commands.index(("nft", "--file", "-")) < commands.index(
+        ("ip", "link", "add", "dev", "wg0", "type", "wireguard")
+    )
+    assert commands.index(("ip", "link", "set", "dev", "wg0", "up")) < commands.index(
+        ("nft", "list", "table", "inet", "shuttle_gate")
+    )
 
     failed = GatewayRuntime(config, instance, tmp_path / "failed", runner=runner)
     monkeypatch.setattr(
@@ -455,6 +504,8 @@ def test_run_gateway_always_cleans_runtime(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[str] = []
+    generate_missing_keys(config, instance, FakeRunner())
+    prepare_launch(config, instance)
 
     class FakeGateway:
         def __init__(self, **_kwargs: Any) -> None:

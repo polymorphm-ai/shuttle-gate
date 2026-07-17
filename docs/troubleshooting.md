@@ -82,7 +82,20 @@ performed for an IPv6 route.
 
 ## Stale state or interrupted shutdown
 
-Run `./shuttle-gate down`, then `./shuttle-gate up`. Runtime networking lives in
-the container namespace and is destroyed with the container. Persistent key
-state is never deleted by `down`. Use `keys prune --yes` only after reviewing
-peer names removed from YAML.
+Run `./shuttle-gate down`, then retry the failed command. Runtime networking
+lives in the container namespace and is destroyed with the container.
+Persistent key state is never deleted by `down`.
+
+State writers reconcile abandoned staging directories and publish only through
+the atomic `state/current` pointer. Do not repair a generation by editing it.
+An installation with the older direct `state/server` and `state/peers` layout
+is copied, validated, and atomically migrated by `keys generate`; its old
+directories are removed only after the new generation is durable.
+If an interrupted key command printed an operation ID, repeat the same command
+with `--operation-id ID`; this resumes recovery or returns its durable receipt.
+A “persistent state is busy” message means the gateway or another writer still
+holds the lock. Stop it or wait; do not remove lock files.
+
+If `up` says its prepared inputs changed, run `down` before `up`. This is a
+fail-closed check for configuration, credential, state-generation, or override
+drift. Use `keys prune --yes` only after reviewing peer names removed from YAML.

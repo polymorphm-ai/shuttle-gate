@@ -10,6 +10,8 @@ The phone configuration, WireGuard private/preshared keys, and SSH private key
 are secrets. They are excluded by `.gitignore`, stored in mode-restricted local
 paths, mounted read-only into the runtime, and never copied into an image.
 Generated WireGuard key text is validated before it can enter a configuration.
+State generations and operation receipts are mode-restricted; receipts contain
+identifiers, paths, hashes, and non-secret results, never key material.
 
 ## Clean host contract
 
@@ -49,6 +51,10 @@ secrets, and persistent state are read-only in the gateway. `no-new-privileges`
 is enabled. The VPN port is published only on the exact configured host
 addresses; wildcard binds are rejected.
 
+The gateway starts only from a launch manifest whose configuration,
+credentials, persistent generation, and generated Compose override still match
+their prepared digests. A changed or partial input fails before network setup.
+
 ## Network policy
 
 Native nftables captures only TCP and UDP for declared routes. SSH recursion,
@@ -70,3 +76,5 @@ does not provide a general packet VPN.
   private and preshared keys but includes public keys, endpoints, and counters.
 - Run `down` before changing sensitive routing and re-run `doctor` after kernel,
   Docker, SSH, or IPv6 changes.
+- Keep printed operation IDs until key commands finish. Reuse the same ID only
+  to reconcile an interrupted command; a new intentional rotation gets a new ID.

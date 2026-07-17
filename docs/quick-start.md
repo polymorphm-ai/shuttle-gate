@@ -31,6 +31,11 @@ Generate a dedicated local key:
 ./shuttle-gate ssh-key instructions
 ```
 
+The generate command prints an operation ID before changing files. Keep it
+until the command finishes. If execution is interrupted, repeat the command
+with `--operation-id ID`; the recorded result is returned without generating a
+second key. Use `--force` only for an intentional replacement.
+
 The second command only prints instructions. The toolkit never runs
 `ssh-copy-id`, `ssh-keyscan`, or any command that edits the SSH server. Run the
 printed `ssh-copy-id` command yourself if you are authorized to add the key.
@@ -53,7 +58,9 @@ If you already have a dedicated key, place it at the configured path below
 
 Key generation is explicit and non-destructive. A repeated command keeps
 existing keys. Each peer gets a separate private key, preshared key, phone
-configuration, and configuration fingerprint under `state/peers/NAME/`.
+configuration, and configuration fingerprint under
+`state/current/peers/NAME/`. `current` is an atomic pointer to one complete,
+validated generation; never edit files below it directly.
 
 Export or print one peer only when needed:
 
@@ -64,6 +71,16 @@ Export or print one peer only when needed:
 
 `--stdout` is available for controlled automation, but it exposes private key
 material to the terminal and should normally be avoided.
+
+Key rotations also print an operation ID. If their outcome is unknown, retry
+with the same ID, for example:
+
+```console
+./shuttle-gate keys rotate-peer phone --yes --operation-id ID
+```
+
+Stop the gateway before generating, rotating, pruning, or regenerating state.
+The running gateway holds a read lock on its exact generation.
 
 ## 4. Check and start
 

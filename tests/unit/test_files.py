@@ -9,10 +9,12 @@ import pytest
 from shuttle_gate.config import ProjectConfig
 from shuttle_gate.errors import ConfigurationError, StateError
 from shuttle_gate.files import (
+    InstancePaths,
     atomic_write,
     atomic_write_json,
     container_secret_path,
     ensure_private_directory,
+    mounted_secret_path,
     read_text_secret,
     require_private_file,
     require_regular_file,
@@ -66,6 +68,8 @@ def test_private_file_rejects_group_access_and_multiline(tmp_path: Path) -> None
 
 def test_secret_paths_are_project_relative() -> None:
     assert container_secret_path(Path("secrets/keys/id")) == Path("/secrets/keys/id")
+    paths = InstancePaths.from_root(Path("/project"))
+    assert mounted_secret_path(paths, Path("secrets/keys/id")) == Path("/project/secrets/keys/id")
     with pytest.raises(ConfigurationError):
         container_secret_path(Path("/tmp/id"))
     with pytest.raises(ConfigurationError):
@@ -131,6 +135,17 @@ def test_atomic_write_removes_temporary_file_after_replace_failure(
 
     assert not destination.exists()
     assert list(destination.parent.iterdir()) == []
+
+
+def test_atomic_write_syncs_the_parent_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    synced: list[Path] = []
+    monkeypatch.setattr("shuttle_gate.files.fsync_directory", synced.append)
+
+    atomic_write(tmp_path / "private/value", "value", 0o600)
+
+    assert synced == [tmp_path / "private"]
 
 
 def test_read_secret_reports_decode_failure(tmp_path: Path) -> None:

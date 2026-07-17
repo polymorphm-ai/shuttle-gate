@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import uuid
 from pathlib import Path
 from typing import Annotated, NoReturn
 
@@ -26,13 +27,17 @@ from .keys import (
     generate_ssh_key,
     peer_rows,
     prune_orphaned_peers,
+    read_phone_config,
+    recover_ssh_key_transaction,
     render_all_phone_configs,
+    require_no_ssh_key_transaction,
     rotate_peer,
     rotate_server,
     ssh_setup_instructions,
 )
 from .runner import SubprocessRunner
 from .runtime import doctor_checks, healthcheck, run_gateway, runtime_status
+from .state import state_lock
 
 app = typer.Typer(no_args_is_help=True, pretty_exceptions_enable=False)
 config_app = typer.Typer(no_args_is_help=True)
@@ -64,14 +69,14 @@ def initialize() -> None:
     """Create project-local configuration and private directories."""
 
     paths = instance_paths()
-    if paths.config.exists():
-        abort(f"refusing to overwrite existing configuration: {paths.config}")
-    example = paths.root / "config.example.yaml"
-    if not example.is_file():
-        abort(f"example configuration is missing: {example}")
-    ensure_private_directory(paths.secrets)
-    ensure_private_directory(paths.state)
-    atomic_write(paths.config, example.read_text(encoding="utf-8"), 0o600)
+    with state_lock(paths, exclusive=True, blocking=False):
+        if paths.config.exists() or paths.config.is_symlink():
+            abort(f"refusing to overwrite existing configuration: {paths.config}")
+        example = paths.root / "config.example.yaml"
+        if not example.is_file():
+            abort(f"example configuration is missing: {example}")
+        ensure_private_directory(paths.secrets)
+        atomic_write(paths.config, example.read_text(encoding="utf-8"), 0o600)
     typer.echo(f"created {paths.config}")
     typer.echo("edit bind addresses, peers, SSH destination, routes, and DNS before setup")
 
@@ -84,7 +89,9 @@ def validate_config() -> None:
     config = configuration(paths)
     container_secret_path(config.ssh.identity_file)
     container_secret_path(config.ssh.known_hosts_file)
-    validate_ssh_files(config, paths.config)
+    with state_lock(paths, exclusive=True, blocking=False):
+        recover_ssh_key_transaction(config, paths)
+        validate_ssh_files(config, paths.config)
     typer.echo("configuration: valid")
 
 
@@ -106,22 +113,30 @@ def require_confirmation(message: str, yes: bool) -> None:
 def keys_rotate_peer(
     name: str,
     yes: Annotated[bool, typer.Option("--yes")] = False,
+    operation_id: Annotated[str | None, typer.Option("--operation-id")] = None,
 ) -> None:
     """Replace one peer key and invalidate its old phone config."""
 
     require_confirmation(f"rotate keys for peer {name}?", yes)
+    request_id = operation_id or uuid.uuid4().hex
+    typer.echo(f"operation ID: {request_id}")
     paths = instance_paths()
-    rotate_peer(configuration(paths), paths, SubprocessRunner(), name)
+    rotate_peer(configuration(paths), paths, SubprocessRunner(), name, request_id)
     typer.echo(f"rotated peer: {name}")
 
 
 @keys_app.command("rotate-server")
-def keys_rotate_server(yes: Annotated[bool, typer.Option("--yes")] = False) -> None:
+def keys_rotate_server(
+    yes: Annotated[bool, typer.Option("--yes")] = False,
+    operation_id: Annotated[str | None, typer.Option("--operation-id")] = None,
+) -> None:
     """Replace the server key and regenerate every phone config."""
 
     require_confirmation("rotate the server key and invalidate every imported phone config?", yes)
+    request_id = operation_id or uuid.uuid4().hex
+    typer.echo(f"operation ID: {request_id}")
     paths = instance_paths()
-    rotate_server(configuration(paths), paths, SubprocessRunner())
+    rotate_server(configuration(paths), paths, SubprocessRunner(), request_id)
     typer.echo("rotated server key; re-import every phone config")
 
 
@@ -145,11 +160,16 @@ def peers_list() -> None:
 
 
 @ssh_key_app.command("generate")
-def ssh_key_generate(force: Annotated[bool, typer.Option("--force")] = False) -> None:
+def ssh_key_generate(
+    force: Annotated[bool, typer.Option("--force")] = False,
+    operation_id: Annotated[str | None, typer.Option("--operation-id")] = None,
+) -> None:
     """Generate a dedicated local SSH identity without network access."""
 
+    request_id = operation_id or uuid.uuid4().hex
+    typer.echo(f"operation ID: {request_id}")
     paths = instance_paths()
-    identity = generate_ssh_key(configuration(paths), paths, SubprocessRunner(), force)
+    identity = generate_ssh_key(configuration(paths), paths, SubprocessRunner(), force, request_id)
     typer.echo(f"created {identity} and {identity}.pub")
     typer.echo("run './shuttle-gate ssh-key instructions' for manual authorization")
 
@@ -177,12 +197,13 @@ def phone_config(
     if name not in {peer.name for peer in config.wireguard.peers}:
         abort(f"peer is not declared in config.yaml: {name}")
     render_all_phone_configs(config, paths)
+    rendered = read_phone_config(paths, name)
     source = paths.peer_dir(name) / PHONE_CONFIG
     if stdout:
-        typer.echo(source.read_text(encoding="utf-8"), nl=False)
+        typer.echo(rendered, nl=False)
         return
     if output is not None:
-        atomic_write(output.resolve(), source.read_text(encoding="utf-8"), 0o600)
+        atomic_write(output.resolve(), rendered, 0o600)
         typer.echo(str(output.resolve()))
         return
     typer.echo(str(source))
@@ -203,9 +224,11 @@ def doctor() -> None:
 
     paths = instance_paths()
     config = configuration(paths)
-    validate_ssh_files(config, paths.config)
-    for message in doctor_checks(config, SubprocessRunner()):
-        typer.echo(message)
+    with state_lock(paths, exclusive=False):
+        require_no_ssh_key_transaction(config, paths)
+        validate_ssh_files(config, paths.config)
+        for message in doctor_checks(config, SubprocessRunner()):
+            typer.echo(message)
 
 
 @app.command("runtime", hidden=True)

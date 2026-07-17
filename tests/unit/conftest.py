@@ -8,6 +8,7 @@ import yaml
 
 from shuttle_gate.config import ProjectConfig
 from shuttle_gate.files import InstancePaths, atomic_write, ensure_private_directory
+from shuttle_gate.state import state_lock
 
 
 def config_data() -> dict[str, Any]:
@@ -67,6 +68,8 @@ def instance(tmp_path: Path) -> InstancePaths:
     paths = InstancePaths.from_root(tmp_path)
     ensure_private_directory(paths.secrets)
     ensure_private_directory(paths.state)
+    with state_lock(paths, exclusive=True):
+        pass
     atomic_write(paths.config, yaml.safe_dump(config_data()), 0o600)
     atomic_write(paths.secrets / "id_ed25519", "private\n", 0o600)
     atomic_write(paths.secrets / "known_hosts", "host key\n", 0o644)

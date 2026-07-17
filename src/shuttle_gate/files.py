@@ -23,6 +23,7 @@ class InstancePaths:
     config: Path
     state: Path
     secrets: Path
+    data: Path | None = None
 
     @classmethod
     def from_root(cls, root: Path) -> InstancePaths:
@@ -35,13 +36,29 @@ class InstancePaths:
         )
 
     def server_dir(self) -> Path:
-        return self.state / "server"
+        return self.data_dir() / "server"
 
     def peer_dir(self, name: str) -> Path:
-        return self.state / "peers" / name
+        return self.data_dir() / "peers" / name
 
     def runtime_dir(self) -> Path:
         return self.state / "runtime"
+
+    def data_dir(self) -> Path:
+        """Return the active or explicitly selected persistent generation."""
+
+        return self.data if self.data is not None else self.state / "current"
+
+    def with_data(self, data: Path) -> InstancePaths:
+        """Return paths bound to one immutable persistent-state generation."""
+
+        return InstancePaths(
+            root=self.root,
+            config=self.config,
+            state=self.state,
+            secrets=self.secrets,
+            data=data,
+        )
 
 
 def resolve_config_path(config_path: Path, configured: Path) -> Path:
@@ -61,6 +78,16 @@ def ensure_private_directory(path: Path) -> None:
     path.chmod(0o700)
     if not path.is_dir():
         raise StateError(f"expected a directory: {path}")
+
+
+def fsync_directory(path: Path) -> None:
+    """Persist directory-entry changes on the Linux filesystems we support."""
+
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def require_private_file(path: Path, label: str) -> None:
@@ -110,6 +137,13 @@ def container_secret_path(configured: Path) -> Path:
     return Path("/secrets").joinpath(*parts[1:])
 
 
+def mounted_secret_path(paths: InstancePaths, configured: Path) -> Path:
+    """Resolve a validated configured secret against this execution environment."""
+
+    relative = container_secret_path(configured).relative_to("/secrets")
+    return paths.secrets / relative
+
+
 def atomic_write(path: Path, data: str, mode: int) -> None:
     """Atomically replace one UTF-8 file with explicit permissions."""
 
@@ -123,7 +157,7 @@ def atomic_write(path: Path, data: str, mode: int) -> None:
             output.flush()
             os.fsync(output.fileno())
         os.replace(temporary, path)
-        path.chmod(mode)
+        fsync_directory(path.parent)
     except BaseException:
         with suppress(OSError):
             os.close(descriptor)

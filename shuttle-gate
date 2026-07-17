@@ -11,12 +11,17 @@ that needs project or networking dependencies runs in Docker.
 
 from __future__ import annotations
 
+import fcntl
+import hashlib
 import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import NoReturn
 
@@ -24,7 +29,14 @@ ROOT = Path(__file__).resolve().parent
 COMPOSE_FILE = ROOT / "docker-compose.yml"
 STATE_DIR = ROOT / "state"
 LAUNCH_MANIFEST = STATE_DIR / "runtime" / "launch.json"
+LIFECYCLE_LOCK = STATE_DIR / ".lifecycle.lock"
 PROJECT_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
+GENERATION_PATTERN = re.compile(r"^gen-[0-9a-f]{32}$")
+OVERRIDE_PATTERN = re.compile(r"^compose\.override-[0-9a-f]{64}\.yaml$")
+SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+LAUNCH_SCHEMA_VERSION = 2
+MAX_LAUNCH_BYTES = 64 * 1024
+MAX_INPUT_BYTES = 1024 * 1024
 LOG_FLAG_OPTIONS = {
     "-f": "--follow",
     "--follow": "--follow",
@@ -68,32 +80,188 @@ def _compose_prefix() -> list[str]:
     return ["docker", "compose", "--project-directory", str(ROOT), "-f", str(COMPOSE_FILE)]
 
 
+def _bounded_digest(path: Path, label: str, *, private: bool = False) -> str:
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    except OSError as exc:
+        raise LauncherError(f"cannot open {label} {path}: {exc}") from exc
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= MAX_INPUT_BYTES:
+            raise LauncherError(f"{label} must be a bounded regular file: {path}")
+        if private and stat.S_IMODE(info.st_mode) & 0o077:
+            raise LauncherError(f"{label} permissions are too open: {path}")
+        with os.fdopen(descriptor, "rb") as source:
+            descriptor = -1
+            return hashlib.sha256(source.read(MAX_INPUT_BYTES + 1)).hexdigest()
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _manifest_project() -> str:
+    try:
+        info = LAUNCH_MANIFEST.stat(follow_symlinks=False)
+        if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= MAX_LAUNCH_BYTES:
+            return "shuttle-gate"
+        raw = json.loads(LAUNCH_MANIFEST.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            return "shuttle-gate"
+        candidate = raw.get("project")
+        if isinstance(candidate, str) and PROJECT_PATTERN.fullmatch(candidate) is not None:
+            return candidate
+    except OSError, UnicodeError, json.JSONDecodeError:
+        pass
+    return "shuttle-gate"
+
+
+def _project_compose_prefix() -> list[str]:
+    return [*_compose_prefix(), "--project-name", _manifest_project()]
+
+
+def _safe_manifest_file(
+    value: object,
+    label: str,
+    required_root: Path,
+    *,
+    exact_parent: bool = False,
+) -> Path:
+    if not isinstance(value, str):
+        raise LauncherError(f"launch manifest has an invalid {label} path")
+    relative = Path(value)
+    root_parts = required_root.parts
+    below_root = relative.parts[: len(root_parts)] == root_parts and len(relative.parts) > len(
+        root_parts
+    )
+    if (
+        relative.is_absolute()
+        or ".." in relative.parts
+        or not below_root
+        or (exact_parent and relative.parent != required_root)
+    ):
+        raise LauncherError(f"launch manifest {label} path is outside {required_root}")
+    try:
+        candidate = ROOT / relative
+        path = candidate.resolve()
+        allowed_root = (ROOT / required_root).resolve()
+        path.relative_to(ROOT)
+        path.relative_to(allowed_root)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise LauncherError(f"launch manifest {label} path escapes the project") from exc
+    if exact_parent and path.parent != allowed_root:
+        raise LauncherError(f"launch manifest {label} path escapes {required_root}")
+    return candidate
+
+
+def _validated_launch() -> tuple[str, Path]:
+    try:
+        info = LAUNCH_MANIFEST.stat(follow_symlinks=False)
+        if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= MAX_LAUNCH_BYTES:
+            raise LauncherError(f"launch manifest is not a bounded regular file: {LAUNCH_MANIFEST}")
+        raw = json.loads(LAUNCH_MANIFEST.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise LauncherError(f"cannot read {LAUNCH_MANIFEST}: {exc}") from exc
+    if not isinstance(raw, dict) or raw.get("schema_version") != LAUNCH_SCHEMA_VERSION:
+        raise LauncherError("launch manifest has an unsupported format; run down, then up")
+    project = raw.get("project")
+    if not isinstance(project, str) or PROJECT_PATTERN.fullmatch(project) is None:
+        raise LauncherError("launch manifest has an invalid project name")
+
+    generation = raw.get("state_generation")
+    if not isinstance(generation, str) or GENERATION_PATTERN.fullmatch(generation) is None:
+        raise LauncherError("launch manifest has an invalid state generation")
+    current = STATE_DIR / "current"
+    try:
+        if not stat.S_ISLNK(current.lstat().st_mode):
+            raise LauncherError(f"persistent-state pointer is not a symlink: {current}")
+        target = os.readlink(current)
+    except OSError as exc:
+        raise LauncherError(f"cannot read persistent-state pointer {current}: {exc}") from exc
+    if target != f"generations/{generation}":
+        raise LauncherError("persistent state changed after prepare; run down, then up")
+    generation_root = STATE_DIR / "generations" / generation
+    generation_manifest = generation_root / "manifest.json"
+    try:
+        if not stat.S_ISDIR(generation_root.stat(follow_symlinks=False).st_mode):
+            raise LauncherError(f"state generation is not a directory: {generation_root}")
+        manifest_info = generation_manifest.stat(follow_symlinks=False)
+        if not stat.S_ISREG(manifest_info.st_mode) or not (
+            0 < manifest_info.st_size <= MAX_LAUNCH_BYTES
+        ):
+            raise LauncherError(f"state generation manifest is invalid: {generation_manifest}")
+        generation_value = json.loads(generation_manifest.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise LauncherError(f"cannot validate state generation {generation}: {exc}") from exc
+    if generation_value != {"generation": generation, "schema_version": 1}:
+        raise LauncherError(f"state generation manifest does not match: {generation_manifest}")
+
+    override = _safe_manifest_file(
+        raw.get("compose_override"),
+        "Compose override",
+        Path("state/runtime"),
+        exact_parent=True,
+    )
+    if OVERRIDE_PATTERN.fullmatch(override.name) is None:
+        raise LauncherError("launch manifest has an invalid Compose override name")
+    identity = _safe_manifest_file(raw.get("ssh_identity"), "SSH identity", Path("secrets"))
+    known_hosts = _safe_manifest_file(
+        raw.get("ssh_known_hosts"), "SSH known-hosts", Path("secrets")
+    )
+    expected_digests = {
+        "config_digest": _bounded_digest(ROOT / "config.yaml", "configuration", private=True),
+        "compose_override_digest": _bounded_digest(override, "Compose override", private=True),
+        "ssh_identity_digest": _bounded_digest(identity, "SSH identity", private=True),
+        "ssh_known_hosts_digest": _bounded_digest(known_hosts, "SSH known-hosts"),
+    }
+    for key, digest in expected_digests.items():
+        recorded = raw.get(key)
+        if not isinstance(recorded, str) or SHA256_PATTERN.fullmatch(recorded) is None:
+            raise LauncherError(f"launch manifest has an invalid {key}")
+        if recorded != digest:
+            raise LauncherError(
+                "configuration, credentials, or launch state changed; run down, then up"
+            )
+    return project, override
+
+
 def _runtime_compose_prefix() -> list[str]:
     prefix = _compose_prefix()
-    project = "shuttle-gate"
-    override: Path | None = None
-    if LAUNCH_MANIFEST.is_file():
-        try:
-            raw = json.loads(LAUNCH_MANIFEST.read_text(encoding="utf-8"))
-            if not isinstance(raw, dict):
-                raise ValueError("manifest is not an object")
-            candidate = raw.get("project")
-            override_value = raw.get("compose_override")
-            if not isinstance(candidate, str) or PROJECT_PATTERN.fullmatch(candidate) is None:
-                raise ValueError("invalid project name")
-            if not isinstance(override_value, str):
-                raise ValueError("invalid override path")
-            override = (ROOT / override_value).resolve()
-            override.relative_to(ROOT)
-            project = candidate
-        except (OSError, ValueError, json.JSONDecodeError) as exc:
-            raise LauncherError(f"cannot read {LAUNCH_MANIFEST}: {exc}") from exc
+    project, override = _validated_launch()
     prefix.extend(["--project-name", project])
-    if override is not None:
-        if not override.is_file():
-            raise LauncherError(f"generated Compose override is missing: {override}")
-        prefix.extend(["-f", str(override)])
+    prefix.extend(["-f", str(override)])
     return prefix
+
+
+@contextmanager
+def _lifecycle_lock() -> Iterator[None]:
+    if STATE_DIR.is_symlink():
+        raise LauncherError(f"state directory must not be a symlink: {STATE_DIR}")
+    try:
+        STATE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+        STATE_DIR.chmod(0o700)
+    except OSError as exc:
+        raise LauncherError(f"cannot prepare state directory {STATE_DIR}: {exc}") from exc
+    flags = os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW
+    try:
+        descriptor = os.open(LIFECYCLE_LOCK, flags, 0o600)
+    except OSError as exc:
+        raise LauncherError(f"cannot open lifecycle lock {LIFECYCLE_LOCK}: {exc}") from exc
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise LauncherError(f"lifecycle lock must be a regular file: {LIFECYCLE_LOCK}")
+        os.fchmod(descriptor, 0o600)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise LauncherError("another up or down operation is already running") from exc
+        except OSError as exc:
+            raise LauncherError(f"cannot lock lifecycle file {LIFECYCLE_LOCK}: {exc}") from exc
+        yield
+    finally:
+        with suppress(OSError):
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        with suppress(OSError):
+            os.close(descriptor)
 
 
 def _run(command: list[str], *, capture: bool = False) -> subprocess.CompletedProcess[str]:
@@ -138,20 +306,33 @@ def _up(arguments: list[str]) -> int:
     elif arguments:
         raise LauncherError("usage: ./shuttle-gate up [--no-build]")
 
-    prepare_code = _run_tool(["prepare"])
-    if prepare_code != 0:
-        return prepare_code
+    with _lifecycle_lock():
+        project_prefix = _project_compose_prefix()
+        running = _run(
+            [*project_prefix, "ps", "--status", "running", "--quiet", "gateway"],
+            capture=True,
+        )
+        if running.returncode != 0:
+            raise LauncherError("failed to inspect the existing gateway")
+        if running.stdout.strip():
+            prefix = _runtime_compose_prefix()
+        else:
+            prepare_code = _run_tool(["prepare"])
+            if prepare_code != 0:
+                return prepare_code
+            prefix = _runtime_compose_prefix()
 
-    command = [*_runtime_compose_prefix(), "up", "--detach", "--wait", "--wait-timeout", "60"]
-    if not no_build:
-        command.append("--build")
-    return _run(command).returncode
+        command = [*prefix, "up", "--detach", "--wait", "--wait-timeout", "60"]
+        if not no_build:
+            command.append("--build")
+        return _run(command).returncode
 
 
 def _down(arguments: list[str]) -> int:
     if arguments:
         raise LauncherError("usage: ./shuttle-gate down")
-    return _run([*_runtime_compose_prefix(), "down", "--remove-orphans"]).returncode
+    with _lifecycle_lock():
+        return _run([*_project_compose_prefix(), "down", "--remove-orphans"]).returncode
 
 
 def _validated_log_tail(value: str) -> str:
@@ -186,13 +367,14 @@ def _logs_command(compose_prefix: list[str], arguments: list[str]) -> list[str]:
 
 
 def _logs(arguments: list[str]) -> int:
-    return _run(_logs_command(_runtime_compose_prefix(), arguments)).returncode
+    return _run(_logs_command(_project_compose_prefix(), arguments)).returncode
 
 
 def _status(arguments: list[str]) -> int:
     if arguments not in ([], ["--json"]):
         raise LauncherError("usage: ./shuttle-gate status [--json]")
-    ps = _run([*_runtime_compose_prefix(), "ps", "--status", "running", "--quiet"], capture=True)
+    prefix = _project_compose_prefix()
+    ps = _run([*prefix, "ps", "--status", "running", "--quiet"], capture=True)
     if ps.returncode != 0:
         return ps.returncode
     if not ps.stdout.strip():
@@ -203,7 +385,7 @@ def _status(arguments: list[str]) -> int:
         return 1
     return _run(
         [
-            *_runtime_compose_prefix(),
+            *prefix,
             "exec",
             "--no-TTY",
             "gateway",

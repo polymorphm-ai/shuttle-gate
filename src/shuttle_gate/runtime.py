@@ -12,11 +12,13 @@ import sys
 import threading
 import time
 from collections.abc import Sequence
+from contextlib import suppress
 from dataclasses import dataclass, field
 from ipaddress import IPv6Address, ip_address
 from pathlib import Path
 from typing import Any
 
+from .compose import validate_launch_manifest
 from .config import ProjectConfig, effective_routes, load_config
 from .errors import RuntimeFailure
 from .files import InstancePaths, atomic_write, atomic_write_json, container_secret_path
@@ -24,6 +26,7 @@ from .keys import load_peer_keys, load_server_keys
 from .nft_tproxy import render_tproxy_table
 from .render import render_server_config
 from .runner import Runner, SubprocessRunner
+from .state import locked_state_view
 
 INTERFACE = "wg0"
 TPROXY_TABLE = "100"
@@ -240,20 +243,25 @@ class GatewayRuntime:
 
         self.runtime_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.runtime_dir.chmod(0o700)
+        self.cleanup()
+        self._write_status("starting")
         try:
             remote_python_check(self.config, self.runner)
-            self._setup_wireguard()
-            self._setup_policy_routing()
             rules = nft_filter(self.config)
             self.runner.run(["nft", "--check", "--file", "-"], input_text=rules)
             self.runner.run(["nft", "--file", "-"], input_text=rules)
+            self._setup_wireguard()
+            self._setup_policy_routing()
             excluded = resolve_ssh_addresses(self.config)
             self._start_sshuttle(excluded)
             if self.config.dns.enabled:
                 self.dnsmasq = subprocess.Popen(dnsmasq_arguments(self.config))
+            self._activate_wireguard()
+            self._verify_postconditions()
             self._write_status("ready")
         except BaseException:
-            self.cleanup()
+            with suppress(RuntimeFailure):
+                self.cleanup()
             raise
 
     def supervise(self) -> None:
@@ -274,13 +282,27 @@ class GatewayRuntime:
         """Idempotently remove owned processes and network state."""
 
         self._write_status("stopping", ignore_errors=True)
+        failures: list[Exception] = []
+
+        def stop_process(process: subprocess.Popen[bytes] | None) -> None:
+            try:
+                _stop_process(process)
+            except Exception as exc:  # cleanup must continue through independent effects
+                failures.append(exc)
+
+        def run_cleanup(command: list[str]) -> None:
+            try:
+                self.runner.run(command, check=False)
+            except Exception as exc:
+                failures.append(exc)
+
         for process in (self.dnsmasq, self.sshuttle):
-            _stop_process(process)
+            stop_process(process)
         self.dnsmasq = None
         self.sshuttle = None
-        self.runner.run(["nft", "delete", "table", "inet", NFT_TABLE], check=False)
+        run_cleanup(["nft", "delete", "table", "inet", NFT_TABLE])
         for family in ("-6", "-4"):
-            self.runner.run(
+            run_cleanup(
                 [
                     "ip",
                     family,
@@ -292,13 +314,19 @@ class GatewayRuntime:
                     TPROXY_TABLE,
                     "priority",
                     TPROXY_PRIORITY,
-                ],
-                check=False,
+                ]
             )
-            self.runner.run(["ip", family, "route", "flush", "table", TPROXY_TABLE], check=False)
-        self.runner.run(["ip", "link", "del", "dev", INTERFACE], check=False)
+            run_cleanup(["ip", family, "route", "flush", "table", TPROXY_TABLE])
+        run_cleanup(["ip", "link", "del", "dev", INTERFACE])
         status = self.runtime_dir / STATUS_FILE
-        status.unlink(missing_ok=True)
+        try:
+            status.unlink(missing_ok=True)
+        except Exception as exc:
+            failures.append(exc)
+        if failures:
+            raise RuntimeFailure(
+                "cleanup was incomplete; container namespace destruction is the final boundary"
+            ) from failures[0]
 
     def _setup_wireguard(self) -> None:
         self.runner.run(["ip", "link", "del", "dev", INTERFACE], check=False)
@@ -316,8 +344,27 @@ class GatewayRuntime:
         atomic_write(config_path, private_config, 0o600)
         self.runner.run(["wg", "setconf", INTERFACE, str(config_path)])
         self.runner.run(
-            ["ip", "link", "set", "dev", INTERFACE, "mtu", str(self.config.wireguard.mtu), "up"]
+            ["ip", "link", "set", "dev", INTERFACE, "mtu", str(self.config.wireguard.mtu)]
         )
+
+    def _activate_wireguard(self) -> None:
+        """Expose the phone-facing interface only after the tunnel is ready."""
+
+        self.runner.run(["ip", "link", "set", "dev", INTERFACE, "up"])
+
+    def _verify_postconditions(self) -> None:
+        """Verify externally visible state before publishing readiness."""
+
+        if self.sshuttle is None or self.sshuttle.poll() is not None:
+            raise RuntimeFailure("sshuttle is not running after startup")
+        if self.config.dns.enabled and (self.dnsmasq is None or self.dnsmasq.poll() is not None):
+            raise RuntimeFailure("dnsmasq is not running after startup")
+        for command in (
+            ["ip", "link", "show", "dev", INTERFACE],
+            ["wg", "show", INTERFACE, "dump"],
+            ["nft", "list", "table", "inet", NFT_TABLE],
+        ):
+            self.runner.run(command)
 
     def _setup_policy_routing(self) -> None:
         families = {route.version for route in effective_routes(self.config)}
@@ -429,15 +476,17 @@ def run_gateway() -> int:
 
     config_path, paths, runtime_dir = runtime_paths()
     config = load_config(config_path)
-    runtime = GatewayRuntime(config=config, paths=paths, runtime_dir=runtime_dir)
-    signal.signal(signal.SIGTERM, runtime.request_stop)
-    signal.signal(signal.SIGINT, runtime.request_stop)
-    try:
-        runtime.start()
-        runtime.supervise()
-        return 0
-    finally:
-        runtime.cleanup()
+    with locked_state_view(paths) as view:
+        validate_launch_manifest(config, view.paths, view.generation)
+        runtime = GatewayRuntime(config=config, paths=view.paths, runtime_dir=runtime_dir)
+        signal.signal(signal.SIGTERM, runtime.request_stop)
+        signal.signal(signal.SIGINT, runtime.request_stop)
+        try:
+            runtime.start()
+            runtime.supervise()
+            return 0
+        finally:
+            runtime.cleanup()
 
 
 def read_runtime_status(runtime_dir: Path) -> dict[str, Any]:
