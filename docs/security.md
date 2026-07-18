@@ -84,17 +84,19 @@ absolute immutability is required, use a key already authorized by the owner.
 
 ## Network policy
 
-Native nftables captures only TCP/UDP inside declared routes. The SSH endpoint,
-peer networks, multicast, and limited broadcast are excluded. Forwarding
-defaults to drop, so proxy failure cannot become direct pasta egress. The
-toolkit never edits the host firewall; external reachability remains an explicit
-operator decision.
+Native nftables captures only TCP/UDP entering through `wg0` inside declared
+routes. It has no transparent-proxy output hook, so namespace control traffic
+such as WireGuard transport and SSH cannot be captured. The SSH endpoint, peer
+networks, multicast, and limited broadcast are excluded from forwarded
+selection. Forwarding defaults to drop, so proxy failure cannot become direct
+pasta egress. The toolkit never edits the host firewall; external reachability
+remains an explicit operator decision.
 
-Phone DNS uses one configured upstream through the ordinary routed UDP path. No
-host resolver data or DNS forwarder is exposed to peers. The sandbox reads a
-host uplink resolver file only to bootstrap an SSH hostname; it is read-only and
-private to the namespace. ICMP, raw protocols, multicast, broadcast, and Layer
-2 are unsupported.
+Phone DNS uses one configured upstream. UDP port 53 uses sshuttle's local DNS
+socket, while TCP port 53 uses its ordinary transparent TCP path. Neither socket
+is exposed to peers. The sandbox reads a host uplink resolver file only to
+bootstrap an SSH hostname; it is read-only and private to the namespace. ICMP,
+raw protocols, multicast, broadcast, and Layer 2 are unsupported.
 
 Selected routing minimizes impact. Full routing expands the confidentiality and
 availability trust placed in the laptop, SSH account, and remote server, while

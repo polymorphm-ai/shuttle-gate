@@ -22,8 +22,9 @@ cache. The remote SSH server is never installed, configured, or modified.
 - an SSH account with Python 3.9+ and normal target-network egress;
 - a phone that can reach the configured laptop address and UDP port.
 
-No host Python, virtual environment, sshuttle installation, DNS forwarder, or
-Docker runtime is required. On Arch Linux, install the runtime tools with:
+No host Python, virtual environment, sshuttle installation, separate DNS
+forwarder, or Docker runtime is required. On Arch Linux, install the runtime
+tools with:
 
 ```console
 sudo pacman -S --needed uv passt bubblewrap iproute2 nftables wireguard-tools openssh

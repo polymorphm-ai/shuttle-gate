@@ -24,13 +24,13 @@ from .errors import CommandError, RuntimeFailure, ShuttleGateError, TransientRun
 from .files import InstancePaths, atomic_write, atomic_write_json, mounted_secret_path
 from .keys import load_peer_keys, load_server_keys
 from .launch import validate_launch_manifest
-from .nft_tproxy import render_tproxy_table
+from .nft_tproxy import PROXY_INGRESS_INTERFACE, render_tproxy_table
 from .render import render_server_config
 from .runner import Runner, SubprocessRunner
 from .sshuttle_entry import ADAPTER_FAILURE_EXIT
 from .state import locked_state_view
 
-INTERFACE = "wg0"
+INTERFACE = PROXY_INGRESS_INTERFACE
 TPROXY_TABLE = "100"
 TPROXY_MARK = "0x1"
 TPROXY_PRIORITY = "100"
@@ -199,14 +199,21 @@ def sshuttle_arguments(
     return command
 
 
-def nft_filter(config: ProjectConfig) -> str:
-    """Drop every packet that escaped local transparent-proxy delivery."""
+def nft_filter() -> str:
+    """Reject direct namespace access and uncaptured forwarding from peers."""
 
     rules = [
         f"table inet {NFT_TABLE} {{",
+        "  chain input {",
+        "    type filter hook input priority filter; policy accept;",
+        (
+            f'    iifname "{INTERFACE}" meta mark != {TPROXY_MARK} counter drop '
+            'comment "direct WireGuard access to namespace"'
+        ),
+        "  }",
         "  chain forward {",
         "    type filter hook forward priority filter; policy drop;",
-        '    iifname "wg0" counter drop comment "uncaptured WireGuard traffic"',
+        f'    iifname "{INTERFACE}" counter drop comment "uncaptured WireGuard traffic"',
         "    counter drop",
         "  }",
         "}",
@@ -254,7 +261,7 @@ class GatewayRuntime:
                 remote_python_check(self.config, self.paths, self.runner)
             except CommandError as exc:
                 raise TransientRuntimeFailure(str(exc)) from exc
-            rules = nft_filter(self.config)
+            rules = nft_filter()
             self.runner.run(["nft", "--check", "--file", "-"], input_text=rules)
             self.runner.run(["nft", "--file", "-"], input_text=rules)
             self._setup_wireguard()

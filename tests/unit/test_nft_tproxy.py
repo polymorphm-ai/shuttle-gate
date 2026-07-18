@@ -13,7 +13,7 @@ import shuttle_gate.nft_tproxy as nft_tproxy
 from shuttle_gate.nft_tproxy import Method, nft_table_name, render_tproxy_table
 
 
-def test_render_ipv4_native_tproxy_has_atomic_hooks_and_udp() -> None:
+def test_render_ipv4_native_tproxy_scopes_ingress_and_dns() -> None:
     rendered = render_tproxy_table(
         port=12300,
         dns_port=12299,
@@ -28,12 +28,31 @@ def test_render_ipv4_native_tproxy_has_atomic_hooks_and_udp() -> None:
     )
 
     assert "table ip shuttle_gate_tproxy_12300" in rendered
-    assert "type route hook output priority mangle" in rendered
+    assert "chain output" not in rendered
     assert "type filter hook prerouting priority mangle" in rendered
+    assert 'iifname != "wg0" return' in rendered
     assert "socket transparent 1" in rendered
-    assert "udp dport 53 tproxy to :12299" in rendered
+    assert "ip daddr 10.20.30.53 udp dport 53 tproxy to :12299" in rendered
+    assert "ip daddr 10.0.0.0/8 meta l4proto tcp tproxy to :12300" in rendered
     assert "ip daddr 10.0.0.0/8 meta l4proto udp tproxy to :12300" in rendered
+    assert rendered.index('iifname != "wg0" return') < rendered.index("udp dport 53")
     assert rendered.index("10.8.1.0/24") < rendered.index("10.0.0.0/8")
+
+
+def test_render_never_intercepts_namespace_output() -> None:
+    rendered = render_tproxy_table(
+        port=12300,
+        dns_port=12299,
+        name_servers=[(socket.AF_INET, "10.20.30.53")],
+        family=socket.AF_INET,
+        subnets=[(socket.AF_INET, 0, False, "0.0.0.0", 0, 0)],
+        udp=True,
+        mark="0x1",
+    )
+
+    assert "hook output" not in rendered
+    assert "udp sport" not in rendered
+    assert rendered.count('iifname != "wg0" return') == 1
 
 
 def test_render_ipv6_uses_family_specific_address_expression() -> None:
@@ -48,6 +67,8 @@ def test_render_ipv6_uses_family_specific_address_expression() -> None:
     )
 
     assert "table ip6 shuttle_gate_tproxy_12301" in rendered
+    assert 'iifname != "wg0" return' in rendered
+    assert "hook output" not in rendered
     assert "ip6 daddr fd20:1234::/48 tcp dport 8000-8080" in rendered
     assert "meta l4proto udp" not in rendered
 

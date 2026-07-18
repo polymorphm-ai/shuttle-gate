@@ -3,6 +3,8 @@
 sshuttle 1.3.2 provides the TCP/UDP proxy engine but its upstream TPROXY
 method programs a legacy firewall frontend.  The runtime injects this method
 module in memory before sshuttle starts, and uses only native ``nft`` rules.
+Only decrypted router traffic entering through ``wg0`` is eligible; traffic
+created by the namespace itself must retain ordinary kernel routing.
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ SOL_IPV6 = 41
 IPV6_ORIGDSTADDR = 74
 IPV6_RECVORIGDSTADDR = IPV6_ORIGDSTADDR
 NFT_TIMEOUT_SECONDS = 10.0
+PROXY_INGRESS_INTERFACE = "wg0"
 
 type Subnet = tuple[int, int, bool, str, int, int]
 type NameServer = tuple[int, str]
@@ -73,7 +76,7 @@ def render_tproxy_table(
     udp: bool,
     mark: str,
 ) -> str:
-    """Render one atomic family-specific nftables table."""
+    """Render one atomic, WireGuard-ingress-only nftables table."""
 
     nft_family, address_token, max_width = _family_tokens(family)
     if (
@@ -86,8 +89,9 @@ def render_tproxy_table(
         raise ValueError(f"invalid DNS proxy port: {dns_port}")
 
     table = nft_table_name(port)
-    output_rules: list[str] = []
-    prerouting_rules: list[str] = []
+    prerouting_rules = [
+        f'    iifname != "{PROXY_INGRESS_INTERFACE}" return',
+    ]
     host_width = 32 if family == socket.AF_INET else 128
 
     for server_family, address in name_servers:
@@ -97,12 +101,10 @@ def render_tproxy_table(
         if server.version != (4 if family == socket.AF_INET else 6):
             raise ValueError(f"name-server family mismatch: {address}")
         dns_match = f"{address_token} daddr {server.network_address} udp dport 53"
-        output_rules.append(f"    {dns_match} meta mark set {mark} accept")
         prerouting_rules.append(
             f"    {dns_match} tproxy to :{dns_port} meta mark set {mark} accept"
         )
 
-    output_rules.append("    fib daddr type local return")
     prerouting_rules.extend(
         [
             "    fib daddr type local return",
@@ -130,20 +132,14 @@ def render_tproxy_table(
                 last_port,
             )
             if exclude:
-                output_rules.append(f"    {match} return")
                 prerouting_rules.append(f"    {match} return")
             else:
-                output_rules.append(f"    {match} meta mark set {mark} accept")
                 prerouting_rules.append(
                     f"    {match} tproxy to :{port} meta mark set {mark} accept"
                 )
 
     lines = [
         f"table {nft_family} {table} {{",
-        "  chain output {",
-        "    type route hook output priority mangle; policy accept;",
-        *output_rules,
-        "  }",
         "  chain prerouting {",
         "    type filter hook prerouting priority mangle; policy accept;",
         *prerouting_rules,

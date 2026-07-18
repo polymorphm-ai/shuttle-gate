@@ -94,10 +94,11 @@ dns:
   upstream: "fd20:1234::53"
 ```
 
-The phone queries this upstream directly through WireGuard and sshuttle; there
-is no gateway DNS proxy. The address must be covered by routing, and every peer
-must have the same address family. Host resolvers and search domains are never
-imported.
+The phone names this upstream directly; it never uses a gateway DNS address.
+Inside the namespace, nftables sends UDP port 53 to sshuttle's in-process DNS
+path, while TCP port 53 uses ordinary transparent TCP. The upstream address
+must be covered by routing, and every peer must have the same address family.
+Host resolvers and search domains are never imported.
 
 ## `backend`
 

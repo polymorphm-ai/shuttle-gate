@@ -164,12 +164,14 @@ def test_sshuttle_target_brackets_ipv6_remote() -> None:
     assert sshuttle_target(config) == "tester@[2001:db8::22]:2222"
 
 
-def test_nft_filter_drops_every_uncaptured_forward(config: ProjectConfig) -> None:
-    rendered = nft_filter(config)
+def test_nft_filter_drops_every_uncaptured_forward() -> None:
+    rendered = nft_filter()
 
-    assert "policy drop" in rendered
+    assert 'iifname "wg0" meta mark != 0x1 counter drop' in rendered
+    assert "direct WireGuard access to namespace" in rendered
+    assert "type filter hook forward priority filter; policy drop" in rendered
     assert "uncaptured WireGuard traffic" in rendered
-    assert " accept" not in rendered
+    assert " counter accept" not in rendered
 
 
 def test_runtime_cleanup_is_idempotent(

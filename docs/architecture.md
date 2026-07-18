@@ -92,16 +92,22 @@ silently take over an active instance.
 ## Packet flow
 
 1. Kernel WireGuard authenticates the peer and enforces its peer address.
-2. Family-specific native nftables rules match TCP/UDP in declared routes.
+2. Family-specific native nftables `prerouting` rules consider only decrypted
+   traffic entering through `wg0` and match TCP/UDP in declared routes.
 3. Packet marks, TPROXY, and namespace-local policy routes deliver traffic to
    sshuttle's transparent listener.
 4. sshuttle multiplexes flows over authenticated SSH.
 5. A temporary Python process opens connections from the remote user's normal
    context; it writes no remote file and exits with the session.
 
-The SSH endpoint, peer networks, multicast, and limited broadcast are excluded.
-An owned nftables forward chain defaults to drop, so uncaptured traffic cannot
-escape directly through pasta.
+The namespace has no transparent-proxy `output` hook. WireGuard transport
+replies, SSH, and other locally generated control traffic therefore use normal
+kernel routing and cannot loop into sshuttle. The SSH endpoint, peer networks,
+multicast, and limited broadcast are excluded from forwarded selection. An
+owned nftables forward chain defaults to drop, so uncaptured traffic cannot
+escape directly through pasta. An input chain also drops unmarked `wg0` traffic
+to namespace-local services; only packets already selected by TPROXY can reach
+the wildcard proxy sockets.
 
 sshuttle's fixed `nft-tproxy` method name is redirected in memory to the
 project implementation. sshuttle re-executes its own `argv[0]` for the firewall
@@ -118,16 +124,17 @@ private network namespace so sshuttle can bind distinct IPv4 and IPv6 sockets
 to one selected port. This does not change the host sysctl.
 
 The adapter disables sshuttle's local system-resolver cache flush. No resolver
-daemon or cache runs inside the namespace, and phone DNS is forwarded directly
-to the configured upstream, so a host-oriented `resolvectl` call has no target
-or useful effect there.
+daemon or cache runs inside the namespace, and phone DNS uses sshuttle's
+in-process path to the configured upstream, so a host-oriented `resolvectl`
+call has no target or useful effect there.
 
 ## DNS and IPv6
 
-There is no local DNS forwarder. When DNS is enabled, phone configurations name
-the explicit upstream IP directly. That address must be inside selected routes
-and its family must exist on every peer, so queries use the same WireGuard,
-TPROXY, and SSH path as other UDP traffic.
+There is no standalone DNS forwarder. When DNS is enabled, phone configurations
+name the explicit upstream IP directly. For packets entering through `wg0`,
+UDP port 53 is transparently delivered to sshuttle's namespace-local DNS socket;
+TCP port 53 follows the ordinary transparent TCP path. The upstream address must
+be inside selected routes and its family must exist on every peer.
 
 The sandbox separately needs bootstrap name resolution when `ssh.host` is a
 hostname. A host loopback resolver cannot be reached from the namespace, so the
