@@ -230,7 +230,7 @@ def doctor() -> None:
     with state_lock(paths, exclusive=False):
         require_no_ssh_key_transaction(config, paths)
         validate_ssh_files(config, paths.config)
-        for message in doctor_checks(config, SubprocessRunner()):
+        for message in doctor_checks(config, paths, SubprocessRunner()):
             typer.echo(message)
 
 

@@ -20,7 +20,7 @@ from typing import Any
 
 from .config import ProjectConfig, effective_routes, load_config
 from .errors import CommandError, RuntimeFailure, ShuttleGateError, TransientRuntimeFailure
-from .files import InstancePaths, atomic_write, atomic_write_json, sandbox_secret_path
+from .files import InstancePaths, atomic_write, atomic_write_json, mounted_secret_path
 from .keys import load_peer_keys, load_server_keys
 from .launch import validate_launch_manifest
 from .nft_tproxy import render_tproxy_table
@@ -58,11 +58,11 @@ def runtime_paths() -> tuple[Path, InstancePaths, Path, Path, Path]:
     return config_path, paths, runtime_path, launch_path, bundle_path
 
 
-def ssh_arguments(config: ProjectConfig) -> list[str]:
-    """Build deterministic strict SSH arguments using sandbox secret mounts."""
+def ssh_arguments(config: ProjectConfig, paths: InstancePaths) -> list[str]:
+    """Build strict SSH arguments using this execution context's secret paths."""
 
-    identity = sandbox_secret_path(config.ssh.identity_file)
-    known_hosts = sandbox_secret_path(config.ssh.known_hosts_file)
+    identity = mounted_secret_path(paths, config.ssh.identity_file)
+    known_hosts = mounted_secret_path(paths, config.ssh.known_hosts_file)
     return [
         "ssh",
         "-F",
@@ -113,7 +113,7 @@ def sshuttle_target(config: ProjectConfig) -> str:
     return f"{config.ssh.user}@{rendered_host}:{config.ssh.port}"
 
 
-def remote_python_check(config: ProjectConfig, runner: Runner) -> None:
+def remote_python_check(config: ProjectConfig, paths: InstancePaths, runner: Runner) -> None:
     """Verify authentication and Python without writing remote state."""
 
     remote_command = shlex.join(
@@ -127,7 +127,7 @@ def remote_python_check(config: ProjectConfig, runner: Runner) -> None:
         ]
     )
     runner.run(
-        [*ssh_arguments(config), "--", ssh_target(config), remote_command],
+        [*ssh_arguments(config, paths), "--", ssh_target(config), remote_command],
         timeout=float(config.ssh.connect_timeout_seconds + 10),
     )
 
@@ -149,7 +149,11 @@ def resolve_ssh_addresses(config: ProjectConfig) -> tuple[str, ...]:
     return tuple(addresses)
 
 
-def sshuttle_arguments(config: ProjectConfig, excluded_addresses: Sequence[str]) -> list[str]:
+def sshuttle_arguments(
+    config: ProjectConfig,
+    paths: InstancePaths,
+    excluded_addresses: Sequence[str],
+) -> list[str]:
     """Build sshuttle's dual-stack native nftables TPROXY command."""
 
     families = {address.version for address in config.wireguard.gateway_addresses}
@@ -175,7 +179,7 @@ def sshuttle_arguments(config: ProjectConfig, excluded_addresses: Sequence[str])
         "--python",
         config.ssh.remote_python,
         "--ssh-cmd",
-        shlex.join(ssh_arguments(config)),
+        shlex.join(ssh_arguments(config, paths)),
         "--verbose",
     ]
     if config.dns.enabled and config.dns.upstream is not None:
@@ -231,7 +235,7 @@ class GatewayRuntime:
         try:
             self._configure_namespace()
             try:
-                remote_python_check(self.config, self.runner)
+                remote_python_check(self.config, self.paths, self.runner)
             except CommandError as exc:
                 raise TransientRuntimeFailure(str(exc)) from exc
             rules = nft_filter(self.config)
@@ -423,7 +427,7 @@ class GatewayRuntime:
             environment = os.environ.copy()
             environment["NOTIFY_SOCKET"] = str(notify_path)
             self.sshuttle = subprocess.Popen(
-                sshuttle_arguments(self.config, excluded), env=environment
+                sshuttle_arguments(self.config, self.paths, excluded), env=environment
             )
             deadline = time.monotonic() + self.config.backend.startup_timeout_seconds
             while time.monotonic() < deadline:
@@ -609,7 +613,11 @@ def runtime_status() -> dict[str, Any]:
     return read_runtime_status(runtime_dir)
 
 
-def doctor_checks(config: ProjectConfig, runner: Runner) -> list[str]:
+def doctor_checks(
+    config: ProjectConfig,
+    paths: InstancePaths,
+    runner: Runner,
+) -> list[str]:
     """Run reversible kernel checks in the disposable doctor namespace."""
 
     messages: list[str] = []
@@ -647,6 +655,6 @@ def doctor_checks(config: ProjectConfig, runner: Runner) -> list[str]:
             )
     rendered_families = "/".join(f"IPv{family}" for family in sorted(families))
     messages.append(f"native nftables {rendered_families} TPROXY: ok")
-    remote_python_check(config, runner)
+    remote_python_check(config, paths, runner)
     messages.append("SSH authentication and remote Python >= 3.9: ok")
     return messages

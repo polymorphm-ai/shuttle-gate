@@ -97,21 +97,27 @@ def as_process(process: FakeProcess) -> subprocess.Popen[bytes]:
     return cast("subprocess.Popen[bytes]", process)
 
 
-def test_ssh_arguments_enforce_noninteractive_strict_auth(config: ProjectConfig) -> None:
-    arguments = ssh_arguments(config)
+def test_ssh_arguments_enforce_noninteractive_strict_auth(
+    config: ProjectConfig,
+    instance: InstancePaths,
+) -> None:
+    arguments = ssh_arguments(config, instance)
     joined = " ".join(arguments)
 
     assert "BatchMode=yes" in joined
     assert "PasswordAuthentication=no" in joined
     assert "StrictHostKeyChecking=yes" in joined
-    assert "UserKnownHostsFile=/secrets/known_hosts" in joined
+    assert f"UserKnownHostsFile={instance.secrets / 'known_hosts'}" in joined
     assert "private" not in joined
 
 
-def test_remote_python_check_is_bounded_and_read_only(config: ProjectConfig) -> None:
+def test_remote_python_check_is_bounded_and_read_only(
+    config: ProjectConfig,
+    instance: InstancePaths,
+) -> None:
     runner = FakeRunner()
 
-    remote_python_check(config, runner)
+    remote_python_check(config, instance, runner)
 
     command = runner.calls[0][0]
     assert command[0] == "ssh"
@@ -131,8 +137,9 @@ def test_remote_python_check_is_bounded_and_read_only(config: ProjectConfig) -> 
 
 def test_sshuttle_command_uses_native_method_shim_and_safe_exclusions(
     config: ProjectConfig,
+    instance: InstancePaths,
 ) -> None:
-    command = sshuttle_arguments(config, ["192.0.2.10", "2001:db8::10"])
+    command = sshuttle_arguments(config, instance, ["192.0.2.10", "2001:db8::10"])
     rendered = " ".join(command)
 
     assert "--method tproxy" in rendered
@@ -239,6 +246,7 @@ def test_namespace_sysctls_are_fixed_and_failure_is_fatal(
 
 
 def test_runtime_paths_honor_sandbox_overrides(
+    config: ProjectConfig,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -256,6 +264,9 @@ def test_runtime_paths_honor_sandbox_overrides(
     assert runtime_dir == tmp_path / "runtime"
     assert launch_path == tmp_path / "launch.json"
     assert bundle_path == tmp_path / "application.pyz"
+    arguments = ssh_arguments(config, paths)
+    assert "/secrets/id_ed25519" in arguments
+    assert "UserKnownHostsFile=/secrets/known_hosts" in arguments
 
 
 def test_wireguard_and_policy_setup_use_exact_dual_stack_commands(
@@ -291,7 +302,11 @@ def test_start_writes_ready_status_and_rolls_back_on_failure(
     runner = FakeRunner()
     generate_missing_keys(config, instance, runner)
     sshuttle = FakeProcess(pid=201)
-    monkeypatch.setattr(runtime_module, "remote_python_check", lambda _config, _runner: None)
+    monkeypatch.setattr(
+        runtime_module,
+        "remote_python_check",
+        lambda _config, _paths, _runner: None,
+    )
     monkeypatch.setattr(runtime_module, "resolve_ssh_addresses", lambda _config: ("192.0.2.1",))
 
     def start_sshuttle(gateway: GatewayRuntime, _excluded: Any) -> None:
@@ -599,9 +614,12 @@ def test_run_gateway_always_cleans_runtime(
     assert events == ["start", "supervise", "cleanup", "status:retrying"]
 
 
-def test_doctor_checks_clean_up_tproxy_chains(config: ProjectConfig) -> None:
+def test_doctor_checks_use_operator_paths_and_clean_up_tproxy_chains(
+    config: ProjectConfig,
+    instance: InstancePaths,
+) -> None:
     runner = FakeRunner()
-    messages = doctor_checks(config, runner)
+    messages = doctor_checks(config, instance, runner)
 
     assert messages[-1].endswith("ok")
     commands = [call[0] for call in runner.calls]
@@ -609,3 +627,6 @@ def test_doctor_checks_clean_up_tproxy_chains(config: ProjectConfig) -> None:
     assert ("nft", "delete", "table", "ip", "shuttle_gate_tproxy_12001") in commands
     assert ("nft", "delete", "table", "ip6", "shuttle_gate_tproxy_12002") in commands
     assert any(command == ("nft", "--check", "--file", "-") for command in commands)
+    ssh_command = next(command for command in commands if command[0] == "ssh")
+    assert str(instance.secrets / "id_ed25519") in ssh_command
+    assert f"UserKnownHostsFile={instance.secrets / 'known_hosts'}" in ssh_command

@@ -163,7 +163,11 @@ def test_doctor_runtime_health_status_and_version_adapters(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _select_root(monkeypatch, instance.root)
-    monkeypatch.setattr(cli, "doctor_checks", lambda _config, _runner: ["all checks: ok"])
+    monkeypatch.setattr(
+        cli,
+        "doctor_checks",
+        lambda _config, _paths, _runner: ["all checks: ok"],
+    )
     assert "all checks: ok" in RUNNER.invoke(cli.app, ["doctor"]).output
 
     monkeypatch.setattr(cli, "run_gateway", lambda: 7)
