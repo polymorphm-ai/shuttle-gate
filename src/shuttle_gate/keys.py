@@ -296,9 +296,9 @@ def _require_selected_phone_configs(
                 raise StateError(f"phone config fingerprint for {peer.name} is unexpectedly large")
             value = json.loads(path.read_text(encoding="utf-8"))
             actual_config = _read_phone_config(paths, peer.name)
-        except (FileNotFoundError, OSError, json.JSONDecodeError, StateError) as exc:
+        except (FileNotFoundError, OSError, UnicodeError, json.JSONDecodeError, StateError) as exc:
             raise StateError(
-                f"phone config for {peer.name} is missing; run phone-config {peer.name}"
+                f"phone config for {peer.name} is missing or invalid; run phone-config {peer.name}"
             ) from exc
         if (
             not isinstance(value, dict)

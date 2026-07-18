@@ -130,6 +130,10 @@ state means the gateway or another writer owns the lock; stop it or wait. If
 `up` reports changed prepared inputs, use `down` and then `up` so a fresh
 manifest can be published.
 
+If `up` reports missing or stale peer material, inspect `peers list`. Use
+`keys generate --peer NAME` for missing keys and `phone-config NAME` for a
+missing, modified, or stale generated configuration.
+
 ## Docker integration tests fail
 
 Docker is not part of production. It is required only by

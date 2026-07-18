@@ -16,8 +16,8 @@ before the command to select an existing alternative. Application and instance
 directories must be separate and non-overlapping.
 
 The operational `config.yaml` must be a regular, non-symlink file whose mode
-does not grant group or other access (normally `0600`). Every command applies
-this check before parsing it. The public `config.example.yaml` is only a
+does not grant group or other access (normally `0600`). Every command that
+parses it applies this check first. The public `config.example.yaml` is only a
 template and is not used as an operational configuration.
 
 ## `wireguard`

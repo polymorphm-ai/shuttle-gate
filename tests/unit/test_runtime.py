@@ -433,12 +433,24 @@ def test_read_runtime_status_is_bounded(tmp_path: Path) -> None:
     assert read_runtime_status(tmp_path)["state"] == "ready"
 
     (tmp_path / "status.json").write_bytes(b"x" * 65537)
-    with pytest.raises(Exception, match="large"):
+    with pytest.raises(RuntimeFailure, match="bounded regular"):
         read_runtime_status(tmp_path)
 
     (tmp_path / "status.json").write_text("[]", encoding="utf-8")
     with pytest.raises(RuntimeFailure, match="invalid format"):
         read_runtime_status(tmp_path)
+
+    (tmp_path / "status.json").write_bytes(b"\xff")
+    with pytest.raises(RuntimeFailure, match="unavailable"):
+        read_runtime_status(tmp_path)
+
+    (tmp_path / "status.json").unlink()
+    target = tmp_path / "status-target.json"
+    atomic_write_json(target, {"schema_version": 2, "state": "ready"})
+    (tmp_path / "status.json").symlink_to(target)
+    with pytest.raises(RuntimeFailure, match="bounded regular"):
+        read_runtime_status(tmp_path)
+
     (tmp_path / "status.json").unlink()
     with pytest.raises(RuntimeFailure, match="unavailable"):
         read_runtime_status(tmp_path)

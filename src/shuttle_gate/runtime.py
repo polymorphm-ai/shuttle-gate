@@ -7,6 +7,7 @@ import os
 import shlex
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import threading
@@ -563,10 +564,11 @@ def read_runtime_status(runtime_dir: Path) -> dict[str, Any]:
 
     path = runtime_dir / STATUS_FILE
     try:
-        if path.stat().st_size > 64 * 1024:
-            raise RuntimeFailure("runtime status file is unexpectedly large")
+        info = path.stat(follow_symlinks=False)
+        if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= 64 * 1024:
+            raise RuntimeFailure("runtime status must be a bounded regular file")
         value = json.loads(path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, OSError, json.JSONDecodeError) as exc:
+    except (FileNotFoundError, OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise RuntimeFailure(f"runtime status is unavailable: {exc}") from exc
     if not isinstance(value, dict) or value.get("schema_version") != 2:
         raise RuntimeFailure("runtime status has an invalid format")

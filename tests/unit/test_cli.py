@@ -207,11 +207,33 @@ def test_doctor_runtime_health_status_and_version_adapters(
     assert RUNNER.invoke(cli.app, ["version"]).output.strip() == "1.0.0"
 
 
+def test_public_help_uses_launcher_name_and_describes_selected_effects() -> None:
+    keys = RUNNER.invoke(
+        cli.app,
+        ["keys", "generate", "--help"],
+        prog_name="./shuttle-gate",
+    )
+    phone = RUNNER.invoke(
+        cli.app,
+        ["phone-config", "--help"],
+        prog_name="./shuttle-gate",
+    )
+
+    assert "Usage: ./shuttle-gate keys generate" in keys.output
+    assert "Limit key generation and config refresh to one peer" in keys.output
+    assert "Usage: ./shuttle-gate phone-config" in phone.output
+    assert "instance-relative path exports/FILE" in phone.output
+
+
 def test_main_turns_application_errors_into_stable_cli_errors(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setattr(cli, "app", lambda: (_ for _ in ()).throw(ShuttleGateError("bad")))
+    def fail(*, prog_name: str) -> None:
+        assert prog_name == "./shuttle-gate"
+        raise ShuttleGateError("bad")
+
+    monkeypatch.setattr(cli, "app", fail)
     with pytest.raises(SystemExit) as raised:
         cli.main()
     assert raised.value.code == 2

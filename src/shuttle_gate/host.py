@@ -1078,10 +1078,10 @@ Commands:
   init                    Create local configuration and protected directories
   doctor                  Check host, namespaces, kernel, SSH, and remote Python
   config validate         Validate config.yaml
-  keys ...                Generate, rotate, or prune WireGuard keys
+  keys ...                Generate, rotate, or prune WireGuard peer state
   peers list              List configured peers and generated state
   ssh-key ...             Generate a dedicated key or print setup instructions
-  phone-config NAME       Generate one mobile WireGuard configuration
+  phone-config NAME       Regenerate one peer's WireGuard configuration
   up                      Start the rootless gateway and wait until ready
   down                    Stop the gateway and destroy its namespaces
   status [--json]         Show gateway and peer status

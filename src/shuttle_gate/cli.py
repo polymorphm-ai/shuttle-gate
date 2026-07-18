@@ -104,8 +104,13 @@ def validate_config() -> None:
 
 
 @keys_app.command("generate")
-def keys_generate(peer: Annotated[str | None, typer.Option("--peer")] = None) -> None:
-    """Generate missing server and declared peer keys."""
+def keys_generate(
+    peer: Annotated[
+        str | None,
+        typer.Option("--peer", help="Limit key generation and config refresh to one peer."),
+    ] = None,
+) -> None:
+    """Generate missing keys and refresh the selected peer configs."""
 
     paths = instance_paths()
     created = generate_missing_keys(configuration(paths), paths, SubprocessRunner(), peer)
@@ -193,10 +198,16 @@ def ssh_key_instructions() -> None:
 @app.command("phone-config")
 def phone_config(
     name: str,
-    output: Annotated[Path | None, typer.Option("--output")] = None,
-    stdout: Annotated[bool, typer.Option("--stdout")] = False,
+    output: Annotated[
+        Path | None,
+        typer.Option("--output", help="Copy to the instance-relative path exports/FILE."),
+    ] = None,
+    stdout: Annotated[
+        bool,
+        typer.Option("--stdout", help="Print the sensitive config to standard output."),
+    ] = False,
 ) -> None:
-    """Regenerate and optionally export one sensitive phone config."""
+    """Regenerate and optionally export one sensitive peer config."""
 
     if output is not None and stdout:
         abort("--output and --stdout are mutually exclusive")
@@ -280,7 +291,7 @@ def version() -> None:
 
 def main() -> None:
     try:
-        app()
+        app(prog_name="./shuttle-gate")
     except ShuttleGateError as exc:
         typer.echo(f"shuttle-gate error: {exc}", err=True)
         raise SystemExit(2) from None

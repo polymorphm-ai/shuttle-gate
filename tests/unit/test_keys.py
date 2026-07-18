@@ -279,6 +279,12 @@ def test_loaders_and_fingerprint_require_complete_private_state(
     with pytest.raises(StateError, match="phone config for phone is missing"):
         require_current_phone_configs(config, instance)
 
+    regenerate_phone_config(config, instance, "phone")
+    (instance.peer_dir("phone") / FINGERPRINT).write_bytes(b"\xff")
+    with pytest.raises(StateError, match="missing or invalid"):
+        require_current_phone_configs(config, instance)
+    assert _peer_state(peer_rows(config, instance), "phone") == ("complete", "stale")
+
 
 def test_prune_refuses_unexpected_state_and_handles_absent_root(
     config: ProjectConfig,
