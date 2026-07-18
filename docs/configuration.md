@@ -95,9 +95,9 @@ dns:
 ```
 
 The phone names this upstream directly; it never uses a gateway DNS address.
-Inside the namespace, nftables sends UDP port 53 to sshuttle's in-process DNS
-path, while TCP port 53 uses ordinary transparent TCP. The upstream address
-must be covered by routing, and every peer must have the same address family.
+DNS uses the same ordinary TCP/UDP proxy path as other routed traffic. The
+upstream must be covered by routing, outside the WireGuard gateway networks,
+reachable from the SSH server, and in an address family present on every peer.
 Host resolvers and search domains are never imported.
 
 ## `backend`

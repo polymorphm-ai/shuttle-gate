@@ -184,9 +184,6 @@ def sshuttle_arguments(
         shlex.join(ssh_arguments(config, paths)),
         "--verbose",
     ]
-    if config.dns.enabled and config.dns.upstream is not None:
-        upstream = str(config.dns.upstream)
-        command.extend(["--ns-hosts", upstream, "--to-ns", upstream])
     for address in excluded_addresses:
         width = "32" if ":" not in address else "128"
         command.extend(["--exclude", f"{address}/{width}"])
@@ -677,8 +674,6 @@ def doctor_checks(
     for family, port, subnets in checks:
         rules = render_tproxy_table(
             port=port,
-            dns_port=12003,
-            name_servers=[],
             family=family,
             subnets=subnets,
             udp=True,

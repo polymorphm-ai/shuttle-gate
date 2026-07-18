@@ -338,17 +338,16 @@ class ProjectConfig(StrictModel):
         if unsupported_route_families:
             rendered = ", ".join(f"IPv{family}" for family in sorted(unsupported_route_families))
             raise ValueError(f"routing uses {rendered} without a WireGuard gateway address")
-        if (
-            self.dns.enabled
-            and self.dns.upstream is not None
-            and not any(
-                route.version == self.dns.upstream.version and self.dns.upstream in route
-                for route in routes
-            )
-        ):
-            raise ValueError("DNS upstream is not covered by configured routing")
-        if self.dns.enabled and self.dns.upstream is not None:
-            family = self.dns.upstream.version
+        upstream = self.dns.upstream if self.dns.enabled else None
+        if upstream is not None:
+            if any(
+                upstream.version == gateway.version and upstream in gateway.network
+                for gateway in self.wireguard.gateway_addresses
+            ):
+                raise ValueError("DNS upstream must be outside WireGuard gateway networks")
+            if not any(route.version == upstream.version and upstream in route for route in routes):
+                raise ValueError("DNS upstream is not covered by configured routing")
+            family = upstream.version
             incompatible = [
                 peer.name
                 for peer in self.wireguard.peers

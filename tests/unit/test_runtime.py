@@ -146,7 +146,8 @@ def test_sshuttle_command_uses_native_method_shim_and_safe_exclusions(
     assert "--method tproxy" in rendered
     assert "--listen 0.0.0.0:0,[::]:0" in rendered
     assert "--tmark 0x1" in rendered
-    assert "--to-ns fd20:1234::53" in rendered
+    assert "--ns-hosts" not in command
+    assert "--to-ns" not in command
     assert "192.0.2.10/32" in command
     assert "2001:db8::10/128" in command
     assert "224.0.0.0/4" in command

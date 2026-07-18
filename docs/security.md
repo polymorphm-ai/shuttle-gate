@@ -92,9 +92,8 @@ selection. Forwarding defaults to drop, so proxy failure cannot become direct
 pasta egress. The toolkit never edits the host firewall; external reachability
 remains an explicit operator decision.
 
-Phone DNS uses one configured upstream. UDP port 53 uses sshuttle's local DNS
-socket, while TCP port 53 uses its ordinary transparent TCP path. Neither socket
-is exposed to peers. The sandbox reads a host uplink resolver file only to
+Phone DNS names one configured upstream and follows the same routed TCP/UDP
+path as other traffic. The sandbox reads a host uplink resolver file only to
 bootstrap an SSH hostname; it is read-only and private to the namespace. ICMP,
 raw protocols, multicast, broadcast, and Layer 2 are unsupported.
 

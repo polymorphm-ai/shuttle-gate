@@ -13,11 +13,9 @@ import shuttle_gate.nft_tproxy as nft_tproxy
 from shuttle_gate.nft_tproxy import Method, nft_table_name, render_tproxy_table
 
 
-def test_render_ipv4_native_tproxy_scopes_ingress_and_dns() -> None:
+def test_render_ipv4_native_tproxy_scopes_ingress_and_routes() -> None:
     rendered = render_tproxy_table(
         port=12300,
-        dns_port=12299,
-        name_servers=[(socket.AF_INET, "10.20.30.53")],
         family=socket.AF_INET,
         subnets=[
             (socket.AF_INET, 8, False, "10.0.0.0", 0, 0),
@@ -32,18 +30,15 @@ def test_render_ipv4_native_tproxy_scopes_ingress_and_dns() -> None:
     assert "type filter hook prerouting priority mangle" in rendered
     assert 'iifname != "wg0" return' in rendered
     assert "socket transparent 1" in rendered
-    assert "ip daddr 10.20.30.53 udp dport 53 tproxy to :12299" in rendered
     assert "ip daddr 10.0.0.0/8 meta l4proto tcp tproxy to :12300" in rendered
     assert "ip daddr 10.0.0.0/8 meta l4proto udp tproxy to :12300" in rendered
-    assert rendered.index('iifname != "wg0" return') < rendered.index("udp dport 53")
+    assert "12299" not in rendered
     assert rendered.index("10.8.1.0/24") < rendered.index("10.0.0.0/8")
 
 
 def test_render_never_intercepts_namespace_output() -> None:
     rendered = render_tproxy_table(
         port=12300,
-        dns_port=12299,
-        name_servers=[(socket.AF_INET, "10.20.30.53")],
         family=socket.AF_INET,
         subnets=[(socket.AF_INET, 0, False, "0.0.0.0", 0, 0)],
         udp=True,
@@ -58,8 +53,6 @@ def test_render_never_intercepts_namespace_output() -> None:
 def test_render_ipv6_uses_family_specific_address_expression() -> None:
     rendered = render_tproxy_table(
         port=12301,
-        dns_port=12302,
-        name_servers=[],
         family=socket.AF_INET6,
         subnets=[(socket.AF_INET6, 48, False, "fd20:1234::", 8000, 8080)],
         udp=False,
@@ -83,8 +76,6 @@ def test_render_rejects_wrong_family_and_mark() -> None:
     with pytest.raises(ValueError, match="mark"):
         render_tproxy_table(
             port=12300,
-            dns_port=12301,
-            name_servers=[],
             family=socket.AF_INET,
             subnets=[],
             udp=True,
@@ -93,8 +84,6 @@ def test_render_rejects_wrong_family_and_mark() -> None:
     with pytest.raises(ValueError, match="wrong address family"):
         render_tproxy_table(
             port=12300,
-            dns_port=12301,
-            name_servers=[],
             family=socket.AF_INET,
             subnets=[(socket.AF_INET6, 64, False, "fd00::", 0, 0)],
             udp=True,
@@ -106,17 +95,13 @@ def test_render_rejects_wrong_family_and_mark() -> None:
     ("kwargs", "message"),
     [
         ({"family": -1}, "address family"),
-        ({"dns_port": 0, "name_servers": [(socket.AF_INET, "10.0.0.53")]}, "DNS"),
         ({"subnets": [(socket.AF_INET, 33, False, "10.0.0.0", 0, 0)]}, "width"),
         ({"subnets": [(socket.AF_INET, 8, False, "10.0.0.0", 90, 80)]}, "port range"),
-        ({"name_servers": [(socket.AF_INET, "fd00::53")]}, "family mismatch"),
     ],
 )
 def test_render_rejects_invalid_dynamic_inputs(kwargs: dict[str, Any], message: str) -> None:
     values: dict[str, Any] = {
         "port": 12300,
-        "dns_port": 12301,
-        "name_servers": [],
         "family": socket.AF_INET,
         "subnets": [],
         "udp": True,
@@ -139,7 +124,7 @@ def test_method_reports_features_and_programs_checked_atomic_rules(
     method = Method("tproxy")
 
     features = method.get_supported_features()
-    assert features.ipv6 and features.udp and features.dns
+    assert features.ipv6 and features.udp and not features.dns
     method.setup_firewall(
         12300,
         12301,

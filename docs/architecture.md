@@ -128,18 +128,15 @@ For dual-stack listeners, the runtime enables `net.ipv6.bindv6only` inside the
 private network namespace so sshuttle can bind distinct IPv4 and IPv6 sockets
 to one selected port. This does not change the host sysctl.
 
-The adapter disables sshuttle's local system-resolver cache flush. No resolver
-daemon or cache runs inside the namespace, and phone DNS uses sshuttle's
-in-process path to the configured upstream, so a host-oriented `resolvectl`
-call has no target or useful effect there.
+The adapter disables sshuttle's unconditional system-resolver cache flush
+because no resolver daemon or cache runs inside the private namespace.
 
 ## DNS and IPv6
 
-There is no standalone DNS forwarder. When DNS is enabled, phone configurations
-name the explicit upstream IP directly. For packets entering through `wg0`,
-UDP port 53 is transparently delivered to sshuttle's namespace-local DNS socket;
-TCP port 53 follows the ordinary transparent TCP path. The upstream address must
-be inside selected routes and its family must exist on every peer.
+There is no DNS forwarder or special DNS listener. When DNS is enabled, phone
+configurations name the explicit upstream IP directly, and its TCP/UDP traffic
+uses the ordinary routed proxy. The upstream must be outside WireGuard gateway
+networks, inside selected routes, and in an address family present on every peer.
 
 The sandbox separately needs bootstrap name resolution when `ssh.host` is a
 hostname. A host loopback resolver cannot be reached from the namespace, so the

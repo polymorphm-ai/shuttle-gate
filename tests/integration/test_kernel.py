@@ -96,7 +96,7 @@ def test_kernel_wireguard_dual_stack_policy_routing_and_native_tproxy() -> None:
         method.setup_firewall(
             12101,
             12102,
-            [(socket.AF_INET, "10.20.30.53")],
+            [],
             socket.AF_INET,
             [(socket.AF_INET, 8, False, "10.0.0.0", 0, 0)],
             True,
@@ -127,7 +127,6 @@ def test_kernel_wireguard_dual_stack_policy_routing_and_native_tproxy() -> None:
         assert "hook input" in namespace_rules
         assert "direct WireGuard access to namespace" in namespace_rules
         assert "hook forward" in namespace_rules
-        assert "udp dport 53 tproxy to :12102" in ipv4_rules
         assert ipv4_rules.count("tproxy to :12101") == 2
     finally:
         method.restore_firewall(12101, socket.AF_INET, True, None, None)
@@ -146,7 +145,6 @@ def test_marked_ipv4_ingress_reaches_tproxy_and_preserves_udp_source() -> None:
     ingress = "wg0"
     sender_interface = "phone0"
     proxy_port = 12111
-    dns_port = 12112
     table = "198"
     priority = "198"
     method = Method("tproxy")
@@ -218,7 +216,7 @@ def test_marked_ipv4_ingress_reaches_tproxy_and_preserves_udp_source() -> None:
         run(["nft", "--file", "-"], input_text=filter_rules)
         method.setup_firewall(
             proxy_port,
-            dns_port,
+            12112,
             [],
             socket.AF_INET,
             [(socket.AF_INET, 0, False, "0.0.0.0", 0, 0)],
@@ -233,11 +231,11 @@ def test_marked_ipv4_ingress_reaches_tproxy_and_preserves_udp_source() -> None:
         listener.settimeout(2)
         sender.setsockopt(socket.SOL_IP, IP_TRANSPARENT, 1)
         sender.bind(("10.254.88.2", 0))
-        sender.sendto(b"marked ingress", ("198.51.100.1", 443))
+        sender.sendto(b"ordinary routed DNS", ("198.51.100.1", 53))
 
         payload, source = listener.recvfrom(4096)
 
-        assert payload == b"marked ingress"
+        assert payload == b"ordinary routed DNS"
         assert source[0] == "10.254.88.2"
 
         response_receiver.bind(("127.0.0.1", 0))

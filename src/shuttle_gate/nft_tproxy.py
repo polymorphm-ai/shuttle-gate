@@ -30,7 +30,6 @@ NFT_TIMEOUT_SECONDS = 10.0
 PROXY_INGRESS_INTERFACE = "wg0"
 
 type Subnet = tuple[int, int, bool, str, int, int]
-type NameServer = tuple[int, str]
 
 
 def nft_table_name(port: int) -> str:
@@ -69,8 +68,6 @@ def _match(protocol: str, address_token: str, network: str, first: int, last: in
 def render_tproxy_table(
     *,
     port: int,
-    dns_port: int,
-    name_servers: Sequence[NameServer],
     family: int,
     subnets: Sequence[Subnet],
     udp: bool,
@@ -85,26 +82,10 @@ def render_tproxy_table(
         or any(character not in "0123456789abcdefABCDEF" for character in mark[2:])
     ):
         raise ValueError(f"invalid packet mark: {mark}")
-    if not 1 <= dns_port <= 65535 and any(item[0] == family for item in name_servers):
-        raise ValueError(f"invalid DNS proxy port: {dns_port}")
-
     table = nft_table_name(port)
     prerouting_rules = [
         f'    iifname != "{PROXY_INGRESS_INTERFACE}" return',
     ]
-    host_width = 32 if family == socket.AF_INET else 128
-
-    for server_family, address in name_servers:
-        if server_family != family:
-            continue
-        server = ip_network(f"{address}/{host_width}", strict=False)
-        if server.version != (4 if family == socket.AF_INET else 6):
-            raise ValueError(f"name-server family mismatch: {address}")
-        dns_match = f"{address_token} daddr {server.network_address} udp dport 53"
-        prerouting_rules.append(
-            f"    {dns_match} tproxy to :{dns_port} meta mark set {mark} accept"
-        )
-
     prerouting_rules.extend(
         [
             "    fib daddr type local return",
@@ -200,7 +181,7 @@ class Method(BaseMethod):  # type: ignore[misc]
         result = super().get_supported_features()
         result.ipv6 = True
         result.udp = True
-        result.dns = True
+        result.dns = False
         return result
 
     @staticmethod
@@ -253,7 +234,7 @@ class Method(BaseMethod):  # type: ignore[misc]
         self,
         port: int,
         dnsport: int,
-        nslist: list[NameServer],
+        nslist: list[tuple[int, str]],
         family: int,
         subnets: list[Subnet],
         udp: bool,
@@ -263,11 +244,10 @@ class Method(BaseMethod):  # type: ignore[misc]
     ) -> None:
         if user is not None or group is not None:
             raise Fatal("native nft-tproxy does not support user/group filters")
+        del dnsport, nslist
         self.restore_firewall(port, family, udp, user, group)
         rules = render_tproxy_table(
             port=port,
-            dns_port=dnsport,
-            name_servers=nslist,
             family=family,
             subnets=subnets,
             udp=udp,

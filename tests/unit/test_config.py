@@ -51,6 +51,10 @@ def test_valid_dual_stack_config_is_immutable() -> None:
             "not covered",
         ),
         (
+            lambda data: data["dns"].update(upstream="fd77::1"),
+            "outside WireGuard gateway networks",
+        ),
+        (
             lambda data: data["wireguard"]["peers"][0].update(addresses=["10.77.0.2/32"]),
             "peers lack IPv6",
         ),

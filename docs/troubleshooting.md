@@ -90,10 +90,10 @@ sshuttle failures. Ping is not a valid test because ICMP is unsupported; use a
 real TCP or UDP client.
 
 For DNS, the configured upstream must be an explicit IP covered by routing and
-reachable from the SSH server. The phone names it directly; UDP port 53 uses
-sshuttle's in-process DNS path and TCP port 53 uses ordinary transparent TCP.
-There is no separately exposed resolver, cache, or imported host search domain.
-Re-import the phone configuration after changing DNS.
+reachable from the SSH server. The phone names it directly, and both UDP and
+TCP use the ordinary routed proxy. There is no separately exposed resolver,
+cache, or imported host search domain. Re-import the phone configuration after
+changing DNS.
 
 Only unicast UDP is captured. Broadcast/multicast discovery, ICMP, raw
 protocols, unusually long idle flows, very large datagrams, and applications
