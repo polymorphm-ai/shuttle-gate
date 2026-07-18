@@ -15,7 +15,6 @@ from ipaddress import (
     IPv6Interface,
     IPv6Network,
     ip_address,
-    ip_network,
 )
 from pathlib import Path
 from typing import Annotated, Any
@@ -33,8 +32,6 @@ PYTHON_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.+-]{0,254}$")
 PYTHON_PATH_PATTERN = re.compile(r"^/[A-Za-z0-9_./+-]{1,254}$")
 HOST_LABEL_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
 INTERFACE_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,15}$")
-MULTICAST_NETWORKS = (ip_network("224.0.0.0/4"), ip_network("ff00::/8"))
-
 IPAddress = IPv4Address | IPv6Address
 IPInterface = IPv4Interface | IPv6Interface
 IPNetwork = IPv4Network | IPv6Network
@@ -258,15 +255,10 @@ class RoutingConfig(StrictModel):
         if len(set(self.networks)) != len(self.networks):
             raise ValueError("routing networks must be unique")
         if self.mode is RoutingMode.SELECTED and any(
-            network.prefixlen == 0 for network in self.networks
-        ):
-            raise ValueError("default routes require routing.mode: full")
-        if self.mode is RoutingMode.SELECTED and any(
-            route.version == multicast.version and route.overlaps(multicast)
+            route.network_address.is_multicast and route.broadcast_address.is_multicast
             for route in self.networks
-            for multicast in MULTICAST_NETWORKS
         ):
-            raise ValueError("selected routing networks must not include multicast space")
+            raise ValueError("selected routing networks must not be entirely multicast")
         return self
 
 

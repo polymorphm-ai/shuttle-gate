@@ -62,7 +62,7 @@ symbolic-link escapes are rejected.
 
 ## `routing`
 
-Selected routing is the safe default:
+Selected routing uses exactly the listed networks:
 
 ```yaml
 routing:
@@ -72,17 +72,21 @@ routing:
     - "fd20:1234::/48"
 ```
 
-Networks must be unique, non-default, outside multicast space, and use only
-families present in `wireguard.gateway_addresses`. Full routing is explicit and
-omits `networks`:
+Networks must be unique and use only families present in
+`wireguard.gateway_addresses`. Explicit default routes are allowed, so one
+family can use a default while another uses narrower routes. Networks entirely
+inside multicast space are rejected; multicast and limited broadcast remain
+excluded from broader routes.
+
+Full routing is a shorthand that omits `networks`:
 
 ```yaml
 routing:
   mode: full
 ```
 
-Full mode derives defaults only for configured WireGuard families. Multicast
-and limited broadcast stay excluded; unmatched forwarding is dropped.
+Full mode derives defaults only for configured WireGuard families. Unmatched
+forwarding is dropped in both modes.
 
 ## `dns`
 

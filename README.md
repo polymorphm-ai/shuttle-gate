@@ -90,10 +90,11 @@ after reviewing the host-policy impact.
 ## Traffic contract
 
 Supported traffic is TCP, general unicast UDP, and optional DNS over declared
-IPv4/IPv6 routes. Full routing derives `0.0.0.0/0` and/or `::/0`, but this is
-not a packet-level VPN: ICMP, raw IP, multicast, broadcast, and Layer 2 are not
-forwarded. Some long-lived or unusual UDP applications may be incompatible
-with sshuttle.
+IPv4/IPv6 routes. `routing.mode: full` derives `0.0.0.0/0` and/or `::/0`;
+selected mode may explicitly combine a default for one family with narrower
+routes for another. This is not a packet-level VPN: ICMP, raw IP, multicast,
+broadcast, and Layer 2 are not forwarded. Some long-lived or unusual UDP
+applications may be incompatible with sshuttle.
 
 ## Documentation
 

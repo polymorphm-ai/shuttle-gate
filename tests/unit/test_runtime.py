@@ -165,6 +165,20 @@ def test_sshuttle_verbose_logging_is_explicit(
     assert "--verbose" in sshuttle_arguments(config, instance)
 
 
+def test_sshuttle_excludes_unsupported_ranges_before_explicit_defaults(
+    instance: InstancePaths,
+) -> None:
+    data = config_data()
+    data["routing"]["networks"] = ["0.0.0.0/0", "2000::/3"]
+    data["dns"]["upstream"] = "2606:4700:4700::1111"
+    config = ProjectConfig.model_validate(data)
+
+    command = sshuttle_arguments(config, instance)
+
+    assert command.index("224.0.0.0/4") < command.index("0.0.0.0/0")
+    assert command.index("ff00::/8") < command.index("2000::/3")
+
+
 def test_sshuttle_target_brackets_ipv6_remote() -> None:
     data = config_data()
     data["ssh"]["host"] = "2001:db8::22"

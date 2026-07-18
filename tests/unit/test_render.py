@@ -56,6 +56,15 @@ def test_dns_uses_only_explicitly_selected_routes() -> None:
     )
 
 
+def test_phone_config_preserves_mixed_selected_routes() -> None:
+    data = config_data()
+    data["routing"]["networks"] = ["0.0.0.0/0", "2000::/3"]
+    data["dns"]["upstream"] = "2606:4700:4700::1111"
+    config = ProjectConfig.model_validate(data)
+
+    assert peer_allowed_routes(config) == ("0.0.0.0/0", "2000::/3")
+
+
 def test_server_config_contains_only_public_peer_material(config: ProjectConfig) -> None:
     rendered = render_server_config(
         config,

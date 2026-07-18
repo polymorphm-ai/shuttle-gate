@@ -44,10 +44,6 @@ def test_valid_dual_stack_config_is_immutable() -> None:
             "outside gateway network",
         ),
         (
-            lambda data: data["routing"].update(networks=["0.0.0.0/0"]),
-            "default routes require",
-        ),
-        (
             lambda data: data["dns"].update(upstream="192.0.2.53"),
             "not covered",
         ),
@@ -86,6 +82,21 @@ def test_full_mode_derives_both_default_routes() -> None:
     assert effective_routes(config) == (
         IPv4Network("0.0.0.0/0"),
         IPv6Network("::/0"),
+    )
+
+
+def test_selected_mode_preserves_mixed_default_and_narrow_routes() -> None:
+    data = config_data()
+    data["routing"] = {
+        "mode": "selected",
+        "networks": ["0.0.0.0/0", "2000::/3"],
+    }
+    data["dns"]["upstream"] = "2606:4700:4700::1111"
+    config = ProjectConfig.model_validate(data)
+
+    assert effective_routes(config) == (
+        IPv4Network("0.0.0.0/0"),
+        IPv6Network("2000::/3"),
     )
 
 

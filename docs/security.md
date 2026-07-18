@@ -97,9 +97,10 @@ path as other traffic. The sandbox reads a host uplink resolver file only to
 bootstrap an SSH hostname; it is read-only and private to the namespace. ICMP,
 raw protocols, multicast, broadcast, and Layer 2 are unsupported.
 
-Selected routing minimizes impact. Full routing expands the confidentiality and
-availability trust placed in the laptop, SSH account, and remote server, while
-still not providing a packet-level VPN.
+Narrow routes minimize impact. A default route, whether explicitly selected or
+derived by full mode, expands the confidentiality and availability trust placed
+in the laptop, SSH account, and remote server while still not providing a
+packet-level VPN.
 
 ## Operational guidance
 
