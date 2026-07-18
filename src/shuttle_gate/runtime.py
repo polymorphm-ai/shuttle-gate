@@ -12,7 +12,6 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
 from ipaddress import IPv6Address, ip_address
@@ -134,27 +133,9 @@ def remote_python_check(config: ProjectConfig, paths: InstancePaths, runner: Run
     )
 
 
-def resolve_ssh_addresses(config: ProjectConfig) -> tuple[str, ...]:
-    """Resolve every SSH endpoint address for tunnel-recursion exclusions."""
-
-    try:
-        answers = socket.getaddrinfo(
-            config.ssh.host,
-            config.ssh.port,
-            type=socket.SOCK_STREAM,
-        )
-    except socket.gaierror as exc:
-        raise TransientRuntimeFailure(f"cannot resolve SSH host {config.ssh.host}: {exc}") from exc
-    addresses = sorted({str(answer[4][0]).split("%", 1)[0] for answer in answers})
-    if not addresses:
-        raise TransientRuntimeFailure(f"SSH host resolved to no addresses: {config.ssh.host}")
-    return tuple(addresses)
-
-
 def sshuttle_arguments(
     config: ProjectConfig,
     paths: InstancePaths,
-    excluded_addresses: Sequence[str],
 ) -> list[str]:
     """Build sshuttle's dual-stack native nftables TPROXY command."""
 
@@ -184,9 +165,6 @@ def sshuttle_arguments(
         shlex.join(ssh_arguments(config, paths)),
         "--verbose",
     ]
-    for address in excluded_addresses:
-        width = "32" if ":" not in address else "128"
-        command.extend(["--exclude", f"{address}/{width}"])
     for network in MULTICAST_EXCLUSIONS:
         if (":" in network and 6 in families) or (":" not in network and 4 in families):
             command.extend(["--exclude", network])
@@ -263,8 +241,7 @@ class GatewayRuntime:
             self.runner.run(["nft", "--file", "-"], input_text=rules)
             self._setup_wireguard()
             self._setup_policy_routing()
-            excluded = resolve_ssh_addresses(self.config)
-            self._start_sshuttle(excluded)
+            self._start_sshuttle()
             self._activate_wireguard()
             self._verify_postconditions()
             self._write_status("ready")
@@ -445,7 +422,7 @@ class GatewayRuntime:
                 ]
             )
 
-    def _start_sshuttle(self, excluded: Sequence[str]) -> None:
+    def _start_sshuttle(self) -> None:
         notify_path = self.runtime_dir / NOTIFY_FILE
         notify_path.unlink(missing_ok=True)
         notify_socket = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
@@ -455,7 +432,7 @@ class GatewayRuntime:
             environment = os.environ.copy()
             environment["NOTIFY_SOCKET"] = str(notify_path)
             self.sshuttle = subprocess.Popen(
-                sshuttle_arguments(self.config, self.paths, excluded), env=environment
+                sshuttle_arguments(self.config, self.paths), env=environment
             )
             deadline = time.monotonic() + self.config.backend.startup_timeout_seconds
             while time.monotonic() < deadline:

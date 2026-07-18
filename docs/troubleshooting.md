@@ -84,10 +84,9 @@ TCP, reverse traffic, gateway addresses, or additional UDP ports.
 
 ## Handshake works, but routed traffic fails
 
-The destination must be inside a configured route and must not be the SSH server
-itself. Confirm the remote SSH account can reach the target. Review logs for
-sshuttle failures. Ping is not a valid test because ICMP is unsupported; use a
-real TCP or UDP client.
+The destination must be inside a configured route. Confirm the remote SSH
+account can reach the target. Review logs for sshuttle failures. Ping is not a
+valid test because ICMP is unsupported; use a real TCP or UDP client.
 
 For DNS, the configured upstream must be an explicit IP covered by routing and
 reachable from the SSH server. The phone names it directly, and both UDP and

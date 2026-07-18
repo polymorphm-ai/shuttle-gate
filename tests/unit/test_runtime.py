@@ -29,7 +29,6 @@ from shuttle_gate.runtime import (
     nft_filter,
     read_runtime_status,
     remote_python_check,
-    resolve_ssh_addresses,
     run_gateway,
     runtime_paths,
     runtime_status,
@@ -136,11 +135,11 @@ def test_remote_python_check_is_bounded_and_read_only(
     assert not {"touch", ">", "tee", "install"}.intersection(remote_tokens)
 
 
-def test_sshuttle_command_uses_native_method_shim_and_safe_exclusions(
+def test_sshuttle_command_uses_native_method_shim_and_route_exclusions(
     config: ProjectConfig,
     instance: InstancePaths,
 ) -> None:
-    command = sshuttle_arguments(config, instance, ["192.0.2.10", "2001:db8::10"])
+    command = sshuttle_arguments(config, instance)
     rendered = " ".join(command)
 
     assert "--method tproxy" in rendered
@@ -148,8 +147,6 @@ def test_sshuttle_command_uses_native_method_shim_and_safe_exclusions(
     assert "--tmark 0x1" in rendered
     assert "--ns-hosts" not in command
     assert "--to-ns" not in command
-    assert "192.0.2.10/32" in command
-    assert "2001:db8::10/128" in command
     assert "224.0.0.0/4" in command
     assert "ff00::/8" in command
     assert "10.0.0.0/8" in command
@@ -318,9 +315,8 @@ def test_start_writes_ready_status_and_rolls_back_on_failure(
         "remote_python_check",
         lambda _config, _paths, _runner: None,
     )
-    monkeypatch.setattr(runtime_module, "resolve_ssh_addresses", lambda _config: ("192.0.2.1",))
 
-    def start_sshuttle(gateway: GatewayRuntime, _excluded: Any) -> None:
+    def start_sshuttle(gateway: GatewayRuntime) -> None:
         gateway.sshuttle = as_process(sshuttle)
 
     monkeypatch.setattr(GatewayRuntime, "_start_sshuttle", start_sshuttle)
@@ -411,7 +407,7 @@ def test_sshuttle_start_waits_for_ready_and_reports_early_exit(
         lambda _args, env: as_process(process),
     )
     gateway = GatewayRuntime(config, instance, tmp_path)
-    gateway._start_sshuttle(("192.0.2.1",))
+    gateway._start_sshuttle()
     assert ready_socket.closed
     assert gateway.sshuttle is not None
 
@@ -423,7 +419,7 @@ def test_sshuttle_start_waits_for_ready_and_reports_early_exit(
         lambda _args, env: as_process(FakeProcess(returncode=9)),
     )
     with pytest.raises(RuntimeFailure, match="status 9"):
-        gateway._start_sshuttle(())
+        gateway._start_sshuttle()
     assert exit_socket.closed
 
     permanent_socket = FakeNotifySocket([b"unused"])
@@ -434,7 +430,7 @@ def test_sshuttle_start_waits_for_ready_and_reports_early_exit(
         lambda _args, env: as_process(FakeProcess(returncode=ADAPTER_FAILURE_EXIT)),
     )
     with pytest.raises(RuntimeFailure, match=f"status {ADAPTER_FAILURE_EXIT}") as raised:
-        gateway._start_sshuttle(())
+        gateway._start_sshuttle()
     assert not isinstance(raised.value, TransientRuntimeFailure)
     assert permanent_socket.closed
 
@@ -477,33 +473,6 @@ def test_read_runtime_status_is_bounded(tmp_path: Path) -> None:
     (tmp_path / "status.json").unlink()
     with pytest.raises(RuntimeFailure, match="unavailable"):
         read_runtime_status(tmp_path)
-
-
-def test_resolve_ssh_addresses_deduplicates(
-    monkeypatch: pytest.MonkeyPatch, config: ProjectConfig
-) -> None:
-    monkeypatch.setattr(
-        socket,
-        "getaddrinfo",
-        lambda *args, **kwargs: [
-            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.1", 22)),
-            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.1", 22)),
-            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2001:db8::1", 22, 0, 0)),
-        ],
-    )
-
-    assert resolve_ssh_addresses(config) == ("192.0.2.1", "2001:db8::1")
-
-    monkeypatch.setattr(socket, "getaddrinfo", lambda *_args, **_kwargs: [])
-    with pytest.raises(RuntimeFailure, match="no addresses"):
-        resolve_ssh_addresses(config)
-
-    def fail_resolution(*_args: Any, **_kwargs: Any) -> Any:
-        raise socket.gaierror("failed")
-
-    monkeypatch.setattr(socket, "getaddrinfo", fail_resolution)
-    with pytest.raises(RuntimeFailure, match="cannot resolve"):
-        resolve_ssh_addresses(config)
 
 
 def test_healthcheck_validates_processes_and_interface(

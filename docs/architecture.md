@@ -102,12 +102,12 @@ silently take over an active instance.
 
 The namespace has no transparent-proxy `output` hook. WireGuard transport
 replies, SSH, and other locally generated control traffic therefore use normal
-kernel routing and cannot loop into sshuttle. The SSH endpoint, peer networks,
-multicast, and limited broadcast are excluded from forwarded selection. An
-owned nftables forward chain defaults to drop, so uncaptured traffic cannot
-escape directly through pasta. An input chain also drops unmarked `wg0` traffic
-to namespace-local services; only packets already selected by TPROXY can reach
-the wildcard proxy sockets.
+kernel routing and cannot loop into sshuttle. Peer networks, multicast, and
+limited broadcast are excluded from forwarded selection. An owned nftables
+forward chain defaults to drop, so uncaptured traffic cannot escape directly
+through pasta. An input chain also drops unmarked `wg0` traffic to
+namespace-local services; only packets already selected by TPROXY can reach the
+wildcard proxy sockets.
 
 IPv4 reverse-path validation ignores the one-way TPROXY mark and uses normal
 namespace routes. Transparent UDP replies retain remote source ports, so this

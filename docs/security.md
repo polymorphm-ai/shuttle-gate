@@ -86,8 +86,8 @@ absolute immutability is required, use a key already authorized by the owner.
 
 Native nftables captures only TCP/UDP entering through `wg0` inside declared
 routes. It has no transparent-proxy output hook, so namespace control traffic
-such as WireGuard transport and SSH cannot be captured. The SSH endpoint, peer
-networks, multicast, and limited broadcast are excluded from forwarded
+such as WireGuard transport and SSH cannot be captured. Peer networks,
+multicast, and limited broadcast are excluded from forwarded
 selection. Forwarding defaults to drop, so proxy failure cannot become direct
 pasta egress. The toolkit never edits the host firewall; external reachability
 remains an explicit operator decision.
