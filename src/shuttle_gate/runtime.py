@@ -339,20 +339,13 @@ class GatewayRuntime:
             return
         families = {route.version for route in effective_routes(self.config)}
         values = {
-            # TPROXY terminates intercepted packets at namespace-local sockets;
-            # no packet should be routed between interfaces.
-            "net/ipv4/ip_forward": "0\n",
-            # Transparent UDP replies must retain the remote source port,
-            # including service ports below 1024.  Keep NET_BIND_SERVICE
-            # dropped and relax privileged ports only in this private netns.
+            # Transparent UDP replies retain low remote source ports.
             "net/ipv4/ip_unprivileged_port_start": "0\n",
         }
         if 4 in families:
             values.update(
                 {
-                    # TPROXY marks only ingress packets.  Including that mark in
-                    # reverse-path lookups selects the local-only proxy table and
-                    # rejects otherwise valid WireGuard source addresses.
+                    # The TPROXY mark applies in only one routing direction.
                     "net/ipv4/conf/all/src_valid_mark": "0\n",
                     "net/ipv4/conf/default/src_valid_mark": "0\n",
                 }
@@ -361,7 +354,6 @@ class GatewayRuntime:
             values.update(
                 {
                     "net/ipv6/bindv6only": "1\n",
-                    "net/ipv6/conf/all/forwarding": "0\n",
                 }
             )
         for relative, value in values.items():

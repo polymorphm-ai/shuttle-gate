@@ -155,7 +155,6 @@ def test_marked_ipv4_ingress_reaches_tproxy_and_preserves_udp_source() -> None:
     response_receiver = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sysctls = {
         Path("/proc/sys/net/ipv4/conf/all/src_valid_mark"): "0\n",
-        Path("/proc/sys/net/ipv4/ip_forward"): "0\n",
         Path("/proc/sys/net/ipv4/ip_unprivileged_port_start"): "0\n",
     }
     changed_sysctls: dict[Path, str] = {}

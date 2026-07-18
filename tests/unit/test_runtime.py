@@ -213,9 +213,7 @@ def test_namespace_sysctls_are_fixed_and_failure_is_fatal(
         "net/ipv4/ip_unprivileged_port_start": "0\n",
         "net/ipv4/conf/all/src_valid_mark": "0\n",
         "net/ipv4/conf/default/src_valid_mark": "0\n",
-        "net/ipv4/ip_forward": "0\n",
         "net/ipv6/bindv6only": "1\n",
-        "net/ipv6/conf/all/forwarding": "0\n",
     }
     for relative, value in expected.items():
         path = sysctls / relative
@@ -241,7 +239,6 @@ def test_namespace_sysctls_are_fixed_and_failure_is_fatal(
         "net/ipv4/ip_unprivileged_port_start",
         "net/ipv4/conf/all/src_valid_mark",
         "net/ipv4/conf/default/src_valid_mark",
-        "net/ipv4/ip_forward",
     ):
         path = ipv4_sysctls / relative
         path.parent.mkdir(parents=True, exist_ok=True)

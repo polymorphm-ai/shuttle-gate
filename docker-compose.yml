@@ -11,10 +11,8 @@ services:
     cap_add: ["NET_ADMIN"]
     security_opt: ["no-new-privileges:true"]
     sysctls:
-      net.ipv4.ip_forward: "0"
       net.ipv4.ip_unprivileged_port_start: "0"
       net.ipv4.conf.all.src_valid_mark: "0"
       net.ipv4.conf.default.src_valid_mark: "0"
-      net.ipv6.conf.all.forwarding: "0"
     working_dir: /app
     entrypoint: ["./test", "--container-integration"]
