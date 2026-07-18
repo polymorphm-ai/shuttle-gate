@@ -781,6 +781,11 @@ def test_dispatch_and_entrypoint_error_translation(
     assert host.main(application, ["logs"]) == 12
     assert host.main(application, ["version"]) == 0
     assert capsys.readouterr().out.strip() == "1.0.0"
+    assert host.main(application, ["--instance", str(default_instance), "version"]) == 0
+    assert capsys.readouterr().out.strip() == "1.0.0"
+    for command in ("runtime", "health", "runtime-status", "unknown"):
+        with pytest.raises(HostError, match="unknown command"):
+            host.main(application, [command])
 
     monkeypatch.setattr(host, "main", lambda _root: (_ for _ in ()).throw(HostError("bad")))
     with pytest.raises(SystemExit) as raised:

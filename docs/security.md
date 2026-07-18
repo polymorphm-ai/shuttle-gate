@@ -59,6 +59,9 @@ file below the private `exports/` directory; paths outside it and symbolic links
 are rejected. Broad, missing explicit, overlapping, and control-character
 instance paths are rejected before mounting. Only an exact `init` command may
 create the known default path; retries after interruption remain safe.
+The host launcher allowlists public operator commands and rejects hidden
+runtime-only entry points, preventing code from running with the wrong mount
+contract.
 
 ## Remote SSH server contract
 

@@ -46,6 +46,17 @@ REQUIRED_RUNTIME_COMMANDS = (
     "systemd-run",
     "wg",
 )
+OPERATOR_COMMANDS = frozenset(
+    {
+        "config",
+        "doctor",
+        "init",
+        "keys",
+        "peers",
+        "phone-config",
+        "ssh-key",
+    }
+)
 LOGS_USAGE = "usage: ./shuttle-gate logs [--follow] [--timestamps] [--tail LINES|all]"
 MAX_LOG_TAIL_LINES = 1_000_000
 READY_POLL_SECONDS = 0.2
@@ -1103,6 +1114,11 @@ def main(application_root: Path, arguments: Sequence[str] | None = None) -> int:
         return _status(instance_root, rest)
     if command == "logs":
         return _logs(instance_root, rest)
+    if command == "version" and not rest:
+        print(__version__)
+        return 0
+    if command not in OPERATOR_COMMANDS:
+        raise HostError(f"unknown command: {command}; run './shuttle-gate --help'")
     return _operator(application_root, instance_root, values)
 
 

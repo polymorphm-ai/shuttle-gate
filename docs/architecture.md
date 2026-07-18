@@ -43,6 +43,9 @@ mounted read-only; the instance is read-only for `doctor` and writable for local
 management commands. Both retain their absolute host pathnames, so printed
 paths remain valid after the sandbox exits. Parent directories are
 namespace-only scaffolding; sibling host content is not exposed.
+The outer launcher allowlists public operator commands. Runtime-only entry
+points cannot be dispatched into this sandbox because their fixed mount paths
+exist only in the long-running service sandbox.
 
 `pasta` creates the rootless user/network namespace. ID 0 inside maps to the
 calling user outside; it grants no host root access. Automatic TCP and reverse
