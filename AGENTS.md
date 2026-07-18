@@ -12,7 +12,7 @@ uses systemd user services, pasta, and bubblewrap.
 ## Development Commands
 
 - `./shuttle-gate config validate` checks local configuration without network changes.
-- `./shuttle-gate --instance PATH ...` selects separate configuration and state.
+- `./shuttle-gate --instance PATH ...` overrides the private XDG default instance.
 - `./shuttle-gate doctor` checks host tools, namespaces, kernel networking, SSH, and remote Python.
 - `./shuttle-gate up`, `status`, `logs`, and `down` manage the user service.
 - `./test` runs lock checks, Ruff, strict mypy, and unit tests with 90% coverage.
@@ -47,9 +47,10 @@ confine runtime effects to the rootless namespace. Mount configuration, secrets,
 and state with minimum access. Never let the toolkit modify the SSH server; it
 may only print manual key-setup instructions. Keep host-facing paths valid
 outside the sandbox; explicit phone-config copies belong only below the ignored
-`exports/` directory. Keep application roots read-only when separate, derive
-runtime identity from canonical instance paths, and fail closed on duplicate
-host UDP tuples.
+`exports/` directory. Keep application roots read-only, derive runtime identity
+from canonical instance paths, and fail closed on duplicate host UDP tuples.
+Application and instance roots must always be separate and non-overlapping;
+never write persistent data beside application code.
 
 Use short Conventional Commit subjects. Pull requests must describe behavior
 and security impact, list tests run, and separate unrelated refactors.

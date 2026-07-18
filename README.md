@@ -37,30 +37,36 @@ tests use fixed container IDs and do not derive UID/GID values from the host.
 
 ## Start here
 
+Without `--instance`, persistent files live below
+`${XDG_CONFIG_HOME:-$HOME/.config}/shuttle-gate/default`. `init` creates that
+private directory and prints the exact configuration path.
+
 ```console
 ./shuttle-gate init
-# Edit config.yaml.
+# Edit the config.yaml path printed by init.
 ./shuttle-gate ssh-key generate
 ./shuttle-gate ssh-key instructions
 # Run the printed setup commands yourself; verify the SSH host fingerprint.
 ./shuttle-gate config validate
 ./shuttle-gate keys generate
 ./shuttle-gate phone-config phone
-# Optional export: ./shuttle-gate phone-config phone --output exports/phone.conf
+# Optional: ./shuttle-gate phone-config phone --output exports/phone.conf
 ./shuttle-gate doctor
 ./shuttle-gate up
 ./shuttle-gate status
 ```
 
-Import `state/current/peers/phone/phone.conf` into the WireGuard app. It contains
-private key material; use a trusted transfer channel and delete extra copies.
-Stop with `./shuttle-gate down`; inspect the systemd journal with
-`./shuttle-gate logs`.
+Import `state/current/peers/phone/phone.conf` below the selected instance into
+the WireGuard app. It contains private key material; use a trusted transfer
+channel and delete extra copies. Stop with `./shuttle-gate down`; inspect the
+systemd journal with `./shuttle-gate logs`.
 
-## Separate instances
+## Instance selection
 
-One application checkout can serve independent configuration directories. The
-directory must already exist; put the global option before the command:
+The default instance is independent of the application location and current
+working directory, so a read-only `/opt` or packaged installation works
+naturally. To select another instance, create its directory and put the global
+option before every command:
 
 ```console
 mkdir -m 700 -- /home/me/shuttle-gate-office
@@ -69,10 +75,10 @@ cd -- /home/me/shuttle-gate-office
 /path/to/shuttle-gate --instance . status
 ```
 
-Without `--instance`, the checkout remains the instance directory for backward
-compatibility. A canonical instance path identifies its state, lock, transient
-systemd unit, and XDG runtime directory. Instances may run together when every
-host address/UDP-port tuple is distinct; a duplicate tuple fails closed without
+Application and instance directories must be separate and non-overlapping. A
+canonical instance path identifies its state, lock, transient systemd unit, and
+XDG runtime directory. Instances may run together when every host
+address/UDP-port tuple is distinct; a duplicate tuple fails closed without
 disturbing the running owner.
 
 The service belongs to the current user manager and normally stops with that

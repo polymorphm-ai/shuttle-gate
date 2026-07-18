@@ -1,8 +1,11 @@
 # Quick Start
 
 Install the [runtime requirements](../README.md#runtime-requirements). Commands
-without `--instance` use the application checkout as the instance directory.
-For separate state, create a dedicated directory and put the global option
+without `--instance` use the private default at
+`${XDG_CONFIG_HOME:-$HOME/.config}/shuttle-gate/default`. This location is
+independent of the application directory and current working directory.
+
+For another instance, create a dedicated directory and put the global option
 before every command:
 
 ```console
@@ -11,8 +14,8 @@ cd -- /home/me/shuttle-gate-office
 /path/to/shuttle-gate --instance . init
 ```
 
-The remaining examples use the colocated default; for the separate layout,
-replace `./shuttle-gate` with `/path/to/shuttle-gate --instance .`.
+The remaining examples use the XDG default. For an explicit instance, add
+`--instance PATH` to every invocation.
 
 ## 1. Prepare the local instance
 
@@ -20,9 +23,10 @@ replace `./shuttle-gate` with `/path/to/shuttle-gate --instance .`.
 ./shuttle-gate init
 ```
 
-This creates intentional persistent `config.yaml`, `secrets/`, and `state/`
-paths. It does not install host packages or change host networking. Edit the
-configuration:
+This safely creates the default instance when needed, including private
+`config.yaml`, `secrets/`, and `state/` paths. It does not write to the
+application directory, install host packages, or change host networking. Edit
+the configuration path printed by `init`:
 
 - bind only exact addresses already owned by the laptop;
 - set an endpoint address or name reachable by the phone;
@@ -35,8 +39,9 @@ See [Configuration](configuration.md) for all fields.
 Instance paths are canonicalized, so symlink aliases select the same instance.
 Spaces, Unicode, shell punctuation, and components beginning with whitespace or
 `-` are supported. Quote such paths in the calling shell. Control characters,
-missing directories, `/`, the user's home directory, and paths overlapping a
-separate application checkout are rejected.
+missing explicit directories, `/`, the user's home directory, and paths
+overlapping the immutable application directory are rejected. Only `init`
+creates a missing default instance; an explicit instance must already exist.
 
 ## 2. Prepare SSH authentication
 

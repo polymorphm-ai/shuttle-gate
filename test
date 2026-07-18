@@ -157,7 +157,7 @@ def _native_integration() -> int:
 
     with tempfile.TemporaryDirectory(prefix="shuttle-gate-runtime-probe-") as temporary:
         base = Path(temporary)
-        project = base / "project"
+        project = base / "instance"
         runtime_root = base / "runtime"
         runtime = RuntimePaths(
             instance_id="0" * 20,
@@ -183,7 +183,8 @@ def _native_integration() -> int:
             project,
             [sys.executable, "-c", RUNTIME_MOUNT_PROBE],
             network_namespace=True,
-            project_read_only=True,
+            instance_read_only=True,
+            application_root=ROOT,
             runtime=runtime,
         )
         if _run(pasta_command(probe)) != 0:
@@ -198,23 +199,63 @@ def _native_integration() -> int:
         ):
             _fail("runtime namespace mount or UID/GID mapping probe failed")
 
-    command = [
-        sys.executable,
-        "-m",
-        "pytest",
-        "-p",
-        "no:cacheprovider",
-        "-m",
-        "integration",
-        "tests/integration",
-    ]
-    sandbox = bubblewrap_command(
-        ROOT,
-        command,
-        network_namespace=True,
-        project_read_only=True,
-    )
-    return _run(pasta_command(sandbox))
+        test_instance = base / "test instance"
+        test_instance.mkdir()
+        command = [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-p",
+            "no:cacheprovider",
+            "-m",
+            "integration",
+            str(ROOT / "tests/integration"),
+        ]
+        sandbox = bubblewrap_command(
+            test_instance,
+            command,
+            network_namespace=True,
+            instance_read_only=True,
+            application_root=ROOT,
+        )
+        return _run(pasta_command(sandbox))
+
+
+def _read_only_application_integration() -> int:
+    """Prove the default instance never needs a writable application tree."""
+
+    with tempfile.TemporaryDirectory(prefix="shuttle-gate-read-only-") as temporary:
+        base = Path(temporary)
+        application = base / "read-only application"
+        application.mkdir()
+        shutil.copy2(ROOT / "shuttle-gate", application / "shuttle-gate")
+        shutil.copy2(ROOT / "config.example.yaml", application / "config.example.yaml")
+        shutil.copytree(ROOT / "src", application / "src")
+        original_entries = {path.relative_to(application) for path in application.rglob("*")}
+        for path in application.rglob("*"):
+            path.chmod(0o555 if path.is_dir() else 0o444)
+        application.chmod(0o555)
+        config_home = base / "  -config $ ; 🚀"
+        try:
+            status = _run(
+                [sys.executable, str(application / "shuttle-gate"), "init"],
+                extra_environment={"XDG_CONFIG_HOME": str(config_home)},
+            )
+            default_instance = config_home / "shuttle-gate/default"
+            if (
+                status != 0
+                or not (default_instance / "config.yaml").is_file()
+                or default_instance.stat().st_mode & 0o777 != 0o700
+                or {path.relative_to(application) for path in application.rglob("*")}
+                != original_entries
+            ):
+                _fail("read-only application or XDG default instance probe failed")
+            return 0
+        finally:
+            application.chmod(0o755)
+            for path in application.rglob("*"):
+                if path.is_dir():
+                    path.chmod(0o755)
 
 
 def _systemd_integration() -> int:
@@ -232,16 +273,18 @@ def _systemd_integration() -> int:
         _fail("true was not found")
     with tempfile.TemporaryDirectory(prefix="shuttle-gate-systemd-") as temporary:
         base = Path(temporary)
+        (base / "instance").mkdir()
         bundle = base / "application.pyz"
         claim = base / "claims" / f"{secrets.token_hex(32)}.lock"
         _build_application_bundle(ROOT, bundle)
         prepare_socket_claims([claim])
         unit = f"shuttle-gate-{secrets.token_hex(10)}.service"
         sandbox = bubblewrap_command(
-            ROOT,
+            base / "instance",
             [executable],
             network_namespace=True,
-            project_read_only=True,
+            instance_read_only=True,
+            application_root=ROOT,
         )
         inner = claim_command([claim], pasta_command(sandbox))
         command = systemd_run_command(unit, inner, python_path=bundle)
@@ -286,7 +329,7 @@ def _multi_instance_integration() -> int:
             instance,
             [sys.executable, "-c", "import time; time.sleep(30)"],
             network_namespace=True,
-            project_read_only=True,
+            instance_read_only=True,
             application_root=ROOT,
         )
         runtime_root = temporary_root / "session/shuttle-gate" / f"instance-{port}"
@@ -375,6 +418,8 @@ def main() -> int:
         return 1
     if not arguments:
         return 0
+    if _read_only_application_integration() != 0:
+        return 1
     if _systemd_integration() != 0:
         return 1
     if _multi_instance_integration() != 0:

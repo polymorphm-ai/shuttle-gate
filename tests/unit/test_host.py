@@ -102,6 +102,49 @@ def test_instance_selection_accepts_unusual_printable_paths_and_canonicalizes_al
     )
 
 
+def test_default_instance_uses_xdg_config_home_and_init_creates_it_privately(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application = tmp_path / "read-only application"
+    application.mkdir(mode=0o555)
+    config_home = tmp_path / "  -config $ ' \" ; [🚀]"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+
+    expected = config_home / "shuttle-gate" / "default"
+    with pytest.raises(HostError, match="not initialized"):
+        host.select_instance(application, ["status"], cwd=tmp_path / "unrelated")
+    with pytest.raises(HostError, match="not initialized"):
+        host.select_instance(application, ["init", "--unexpected"])
+    assert not expected.exists()
+
+    selected, remaining = host.select_instance(application, ["init"])
+
+    assert selected == expected.resolve()
+    assert remaining == ["init"]
+    assert selected.stat().st_mode & 0o777 == 0o700
+    assert selected.parent.stat().st_mode & 0o777 == 0o700
+    assert application.stat().st_mode & 0o777 == 0o555
+    assert host.select_instance(application, ["status"])[0] == selected
+
+
+def test_default_instance_follows_xdg_fallback_rules(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    assert host.default_instance_root() == (home / ".config/shuttle-gate/default").resolve()
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", "relative-path-is-invalid")
+    assert host.default_instance_root() == (home / ".config/shuttle-gate/default").resolve()
+
+    monkeypatch.setenv("HOME", "relative")
+    with pytest.raises(HostError, match="HOME must be an absolute"):
+        host.default_instance_root()
+
+
 @pytest.mark.parametrize(
     "requested", ["", "line\nbreak", "tab\tpath", "escape\x1bpath", "nul\0path"]
 )
@@ -130,6 +173,7 @@ def test_instance_selection_rejects_missing_broad_and_overlapping_paths(tmp_path
         (str(regular_file), "directory"),
         ("/", "broad"),
         (str(home), "broad"),
+        (str(application), "separate"),
         (str(nested), "overlap"),
         (str(tmp_path), "overlap"),
     ):
@@ -189,7 +233,9 @@ def test_namespace_commands_have_fixed_boundaries_and_exposure(
 ) -> None:
     _commands(monkeypatch)
     runtime = _runtime(tmp_path)
-    root = tmp_path / "project"
+    application = tmp_path / "application"
+    application.mkdir()
+    root = tmp_path / "instance"
     for path in (root / "secrets", root / "state", runtime.inputs, runtime.output):
         path.mkdir(parents=True, exist_ok=True)
     for path in (root / "config.yaml", root / "state/.state.lock", runtime.launch, runtime.bundle):
@@ -199,7 +245,8 @@ def test_namespace_commands_have_fixed_boundaries_and_exposure(
         root,
         ["/python", "-m", "shuttle_gate", "keys", "generate"],
         network_namespace=False,
-        project_read_only=False,
+        instance_read_only=False,
+        application_root=application,
     )
     assert "--unshare-user" in operator
     assert "--unshare-net" in operator
@@ -212,7 +259,8 @@ def test_namespace_commands_have_fixed_boundaries_and_exposure(
         root,
         ["/python", "-m", "shuttle_gate", "runtime"],
         network_namespace=True,
-        project_read_only=True,
+        instance_read_only=True,
+        application_root=application,
         runtime=runtime,
     )
     assert "--unshare-user" not in gateway
@@ -230,7 +278,7 @@ def test_namespace_commands_have_fixed_boundaries_and_exposure(
     root_environment = operator.index("SHUTTLE_GATE_ROOT")
     assert operator[root_environment + 1] == str(root.resolve())
     python_environment = operator.index("PYTHONPATH")
-    assert operator[python_environment + 1] == str(root.resolve() / "src")
+    assert operator[python_environment + 1] == str(application.resolve() / "src")
 
     pasta = host.pasta_command(gateway, config)
     assert pasta.count("--udp-ports") == 2
@@ -249,7 +297,8 @@ def test_namespace_commands_have_fixed_boundaries_and_exposure(
             root,
             [],
             network_namespace=False,
-            project_read_only=False,
+            instance_read_only=False,
+            application_root=application,
         )
 
 
@@ -267,7 +316,7 @@ def test_operator_mounts_application_read_only_and_instance_at_its_host_path(
         instance,
         ["/python", "-m", "shuttle_gate", "version"],
         network_namespace=False,
-        project_read_only=False,
+        instance_read_only=False,
         application_root=application,
     )
 
@@ -481,14 +530,18 @@ def test_status_reads_bounded_snapshot_and_main_dispatches(
         called.append((application, instance, list(args)))
         return 0
 
-    monkeypatch.setattr(host, "_up", dispatch_up)
-    assert host.main(tmp_path, ["up"]) == 0
-    assert called == [(tmp_path, tmp_path.resolve(), [])]
-
     application = tmp_path / "application"
+    config_home = tmp_path / "config home"
+    default_instance = config_home / "shuttle-gate/default"
     selected_instance = tmp_path / "selected instance"
     application.mkdir()
+    default_instance.mkdir(parents=True)
     selected_instance.mkdir()
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+    monkeypatch.setattr(host, "_up", dispatch_up)
+    assert host.main(application, ["up"]) == 0
+    assert called == [(application, default_instance.resolve(), [])]
+
     assert (
         host.main(
             application,
@@ -649,11 +702,15 @@ def test_status_text_down_logs_and_operator_paths(
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(host, "_run", record)
-    assert host._operator(tmp_path, tmp_path, ["keys", "generate"]) == 0
+    application = tmp_path / "application"
+    selected_instance = tmp_path / "instance"
+    application.mkdir()
+    selected_instance.mkdir()
+    assert host._operator(application, selected_instance, ["keys", "generate"]) == 0
     assert calls[-1] == ["bwrap"]
-    assert host._operator(tmp_path, tmp_path, ["doctor"]) == 0
+    assert host._operator(application, selected_instance, ["doctor"]) == 0
     assert calls[-1] == ["pasta", "bwrap"]
-    assert sandbox_options[-1]["project_read_only"] is True
+    assert sandbox_options[-1]["instance_read_only"] is True
     assert pasta_configs[-1] is None
 
 
@@ -706,16 +763,24 @@ def test_dispatch_and_entrypoint_error_translation(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    assert host.main(tmp_path, ["--help"]) == 0
+    application = tmp_path / "application"
+    config_home = tmp_path / "config"
+    default_instance = config_home / "shuttle-gate/default"
+    application.mkdir()
+    default_instance.mkdir(parents=True)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+
+    assert host.main(application, ["--help"]) == 0
     assert "usage:" in capsys.readouterr().out
     monkeypatch.setattr(host, "_down", lambda _root, _args: 10)
     monkeypatch.setattr(host, "_status", lambda _root, _args: 11)
     monkeypatch.setattr(host, "_logs", lambda _root, _args: 12)
     monkeypatch.setattr(host, "_operator", lambda _application, _instance, _args: 13)
-    assert host.main(tmp_path, ["down"]) == 10
-    assert host.main(tmp_path, ["status"]) == 11
-    assert host.main(tmp_path, ["logs"]) == 12
-    assert host.main(tmp_path, ["version"]) == 13
+    assert host.main(application, ["down"]) == 10
+    assert host.main(application, ["status"]) == 11
+    assert host.main(application, ["logs"]) == 12
+    assert host.main(application, ["version"]) == 0
+    assert capsys.readouterr().out.strip() == "1.0.0"
 
     monkeypatch.setattr(host, "main", lambda _root: (_ for _ in ()).throw(HostError("bad")))
     with pytest.raises(SystemExit) as raised:
@@ -730,6 +795,8 @@ def test_up_prepares_and_starts_once(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    application = tmp_path / "application"
+    application.mkdir()
     runtime = _runtime(tmp_path)
     commands: list[list[str]] = []
     monkeypatch.setattr(host, "runtime_paths", lambda _root: runtime)
@@ -757,7 +824,7 @@ def test_up_prepares_and_starts_once(
 
     monkeypatch.setattr(host, "_run", run)
 
-    assert host._up(instance.root, instance.root, []) == 0
+    assert host._up(application, instance.root, []) == 0
     assert ["systemd-run"] in commands
     assert runtime.inputs.is_dir()
 
@@ -768,6 +835,8 @@ def test_up_resumes_only_a_valid_active_launch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    application = tmp_path / "application"
+    application.mkdir()
     runtime = _runtime(tmp_path)
     waited: list[str] = []
     monkeypatch.setattr(host, "runtime_paths", lambda _root: runtime)
@@ -804,10 +873,10 @@ def test_up_resumes_only_a_valid_active_launch(
         lambda command, **_kwargs: subprocess.CompletedProcess(command, 0, "running", ""),
     )
 
-    assert host._up(instance.root, instance.root, []) == 0
+    assert host._up(application, instance.root, []) == 0
     assert waited == ["3" * 32]
     monkeypatch.setattr(host, "_application_bundle", lambda _root: b"different")
     with pytest.raises(StateError, match="application source differs"):
-        host._up(instance.root, instance.root, [])
+        host._up(application, instance.root, [])
     with pytest.raises(HostError, match="usage"):
-        host._up(instance.root, instance.root, ["raw"])
+        host._up(application, instance.root, ["raw"])

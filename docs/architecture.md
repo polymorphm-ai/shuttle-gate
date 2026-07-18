@@ -23,8 +23,10 @@ bubblewrap runtime sandbox
 `./shuttle-gate` is a locked PEP 723 script. uv supplies Python and application
 packages from its user cache. The application root contains code and the
 configuration template; the canonical instance root contains `config.yaml`,
-`secrets/`, `state/`, and `exports/`. `--instance PATH` separates them, while
-omitting it preserves the colocated layout. The instance path hashes to its
+`secrets/`, `state/`, and `exports/`. They are always separate. The application
+is immutable; the default instance is the private XDG configuration profile at
+`${XDG_CONFIG_HOME:-$HOME/.config}/shuttle-gate/default`, and `--instance PATH`
+selects another existing directory. The canonical instance path hashes to its
 transient unit and XDG runtime names.
 
 The launcher validates host inputs, creates an immutable application zip and
@@ -55,6 +57,11 @@ Production never invokes Docker. Docker Compose exists only for a second,
 disposable integration-test environment.
 
 ## Durable state and launch publication
+
+Only an exact `init` request may create a missing default instance. It creates
+private XDG parent directories in ordered, fsynced steps; interruption can leave
+only safe directories, and retry converges. Explicit instance directories must
+already exist, preventing accidental path creation from mistyped arguments.
 
 WireGuard keys, peer configurations, fingerprints, and operation receipts live
 in immutable directories under `state/generations/`. A writer constructs and

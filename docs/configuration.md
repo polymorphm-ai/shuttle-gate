@@ -10,8 +10,10 @@ normalized before any namespace is started.
 
 The canonical instance-directory path, not `project` or the application path,
 identifies its transient systemd unit and XDG runtime directory. Symlink aliases
-therefore select the same instance. Use `--instance PATH` before the command;
-without it, the application checkout is the instance directory.
+therefore select the same instance. Without `--instance`, the directory is
+`${XDG_CONFIG_HOME:-$HOME/.config}/shuttle-gate/default`. Use `--instance PATH`
+before the command to select an existing alternative. Application and instance
+directories must be separate and non-overlapping.
 
 ## `wireguard`
 

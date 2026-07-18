@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NoReturn
 
+from . import __version__
 from .config import ProjectConfig, load_config
 from .errors import ShuttleGateError, StateError
 from .files import InstancePaths, atomic_write_bytes, ensure_private_directory, fsync_directory
@@ -50,6 +51,7 @@ MAX_LOG_TAIL_LINES = 1_000_000
 READY_POLL_SECONDS = 0.2
 STOP_TIMEOUT_SECONDS = 30.0
 TEMPORARY_SUFFIX_PATTERN = re.compile(r"^[a-z0-9_]{8}$")
+DEFAULT_INSTANCE_PARTS = ("shuttle-gate", "default")
 
 
 class HostError(ShuttleGateError):
@@ -69,11 +71,94 @@ class RuntimePaths:
     bundle: Path
 
 
+def default_instance_root() -> Path:
+    """Return the canonical per-user default without creating it."""
+
+    configured = os.environ.get("XDG_CONFIG_HOME")
+    if configured and not configured.isprintable():
+        raise HostError("XDG_CONFIG_HOME must contain only printable characters")
+    if configured and Path(configured).is_absolute():
+        base = Path(configured)
+    else:
+        home_value = os.environ.get("HOME")
+        if home_value and not home_value.isprintable():
+            raise HostError("HOME must contain only printable characters")
+        if home_value:
+            home = Path(home_value)
+            if not home.is_absolute():
+                raise HostError("HOME must be an absolute path")
+        else:
+            home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+        base = home / ".config"
+    try:
+        return base.joinpath(*DEFAULT_INSTANCE_PARTS).resolve(strict=False)
+    except (OSError, RuntimeError) as exc:
+        raise HostError("default instance path cannot be resolved") from exc
+
+
+def _validate_root_separation(application: Path, instance: Path) -> None:
+    """Keep immutable application resources outside mutable instance data."""
+
+    if (
+        instance == application
+        or instance.is_relative_to(application)
+        or application.is_relative_to(instance)
+    ):
+        raise HostError("instance and application directories must be separate and non-overlapping")
+
+
+def _create_directory_parents(path: Path) -> None:
+    """Create missing XDG parents privately and durably without changing existing modes."""
+
+    missing: list[Path] = []
+    current = path
+    while True:
+        try:
+            info = current.stat(follow_symlinks=False)
+        except FileNotFoundError:
+            missing.append(current)
+            parent = current.parent
+            if parent == current:
+                raise HostError("default instance has no existing directory ancestor") from None
+            current = parent
+            continue
+        except OSError as exc:
+            raise HostError("default instance parent cannot be inspected") from exc
+        if not stat.S_ISDIR(info.st_mode):
+            raise HostError("default instance parent must be a directory")
+        break
+    for directory in reversed(missing):
+        try:
+            directory.mkdir(mode=0o700)
+        except FileExistsError:
+            try:
+                info = directory.stat(follow_symlinks=False)
+            except OSError as exc:
+                raise HostError("default instance parent cannot be inspected") from exc
+            if not stat.S_ISDIR(info.st_mode):
+                raise HostError("default instance parent must be a directory") from None
+        except OSError as exc:
+            raise HostError("default instance parent cannot be created") from exc
+        fsync_directory(directory.parent)
+
+
+def _create_default_instance(root: Path) -> None:
+    """Create the known private default in retry-safe directory steps."""
+
+    namespace = root.parent
+    _create_directory_parents(namespace.parent)
+    ensure_private_directory(namespace)
+    fsync_directory(namespace.parent)
+    ensure_private_directory(root)
+    fsync_directory(namespace)
+
+
 def resolve_instance_root(
     application_root: Path,
     requested: str | None,
     *,
     cwd: Path | None = None,
+    create_default: bool = False,
 ) -> Path:
     """Resolve one dedicated instance directory without unsafe broad mounts."""
 
@@ -83,12 +168,20 @@ def resolve_instance_root(
     base = Path.cwd() if cwd is None else cwd
     if requested is not None and (not requested or not requested.isprintable()):
         raise HostError("instance paths must contain only printable characters")
-    candidate = application if requested is None else Path(requested)
+    candidate = default_instance_root() if requested is None else Path(requested)
     if not candidate.is_absolute():
         candidate = base / candidate
+    if requested is None and create_default:
+        prospective = candidate.resolve(strict=False)
+        _validate_root_separation(application, prospective)
+        _create_default_instance(prospective)
     try:
         resolved = candidate.resolve(strict=True)
     except (OSError, RuntimeError) as exc:
+        if requested is None:
+            raise HostError(
+                "default instance is not initialized; run './shuttle-gate init'"
+            ) from exc
         raise HostError("instance directory does not exist or cannot be resolved") from exc
     if not str(resolved).isprintable():
         raise HostError("instance paths must contain only printable characters")
@@ -101,11 +194,7 @@ def resolve_instance_root(
     home = Path(pwd.getpwuid(os.getuid()).pw_dir).resolve()
     if resolved in {Path("/"), home}:
         raise HostError("refusing to use a broad system or home directory as an instance")
-    overlaps_application = resolved != application and (
-        resolved.is_relative_to(application) or application.is_relative_to(resolved)
-    )
-    if overlaps_application:
-        raise HostError("instance and application directories must not overlap")
+    _validate_root_separation(application, resolved)
     return resolved
 
 
@@ -131,7 +220,16 @@ def select_instance(
         values = values[1:]
     if values and (values[0] == "--instance" or values[0].startswith("--instance=")):
         raise HostError("--instance may be specified only once")
-    return resolve_instance_root(application_root, requested, cwd=cwd), values
+    create_default = requested is None and values == ["init"]
+    return (
+        resolve_instance_root(
+            application_root,
+            requested,
+            cwd=cwd,
+            create_default=create_default,
+        ),
+        values,
+    )
 
 
 def _fail(message: str, exit_code: int = 2) -> NoReturn:
@@ -272,29 +370,27 @@ def _python_mounts() -> list[tuple[Path, Path]]:
 
 
 def bubblewrap_command(
-    root: Path,
+    instance_root: Path,
     command: Sequence[str],
     *,
     network_namespace: bool,
-    project_read_only: bool,
+    instance_read_only: bool,
+    application_root: Path,
     runtime: RuntimePaths | None = None,
-    application_root: Path | None = None,
 ) -> list[str]:
     """Build the auditable filesystem/process sandbox command."""
 
     if not command:
         raise ValueError("sandbox command must not be empty")
-    instance_root = root.resolve()
-    application = (root if application_root is None else application_root).resolve()
+    instance_root = instance_root.resolve(strict=True)
+    application = application_root.resolve(strict=True)
+    _validate_root_separation(application, instance_root)
     mounts = [*_system_mounts(), *_python_mounts()]
-    project_mode = "--ro-bind" if project_read_only else "--bind"
+    instance_mode = "--ro-bind" if instance_read_only else "--bind"
     if runtime is None:
         # Keep both roots at their host pathnames. Operator commands print paths
         # for the user, so artificial mount points would leak unusable names.
-        if application == instance_root:
-            mounts.append((instance_root, instance_root))
-        else:
-            mounts.extend([(application, application), (instance_root, instance_root)])
+        mounts.extend([(application, application), (instance_root, instance_root)])
     else:
         mounts.extend(
             [
@@ -346,7 +442,7 @@ def bubblewrap_command(
     for source, destination in mounts:
         mode = "--ro-bind"
         if runtime is None and source == instance_root and destination == instance_root:
-            mode = project_mode
+            mode = instance_mode
         elif runtime is not None and destination == Path("/run/shuttle-gate/output"):
             mode = "--bind"
         arguments.extend([mode, str(source), str(destination)])
@@ -766,9 +862,9 @@ def _up(application_root: Path, instance_root: Path, arguments: Sequence[str]) -
             instance_root,
             inner,
             network_namespace=True,
-            project_read_only=True,
-            runtime=paths,
+            instance_read_only=True,
             application_root=application_root,
+            runtime=paths,
         )
         claims = socket_claim_paths(paths, config)
         prepare_socket_claims(claims)
@@ -940,7 +1036,7 @@ def _operator(
         instance_root,
         inner,
         network_namespace=False,
-        project_read_only=False,
+        instance_read_only=False,
         application_root=application_root,
     )
     if arguments and arguments[0] == "doctor":
@@ -953,7 +1049,7 @@ def _operator(
             instance_root,
             inner,
             network_namespace=True,
-            project_read_only=True,
+            instance_read_only=True,
             application_root=application_root,
         )
         sandbox = pasta_command(sandbox)
@@ -965,7 +1061,7 @@ def _print_help() -> None:
         """usage: ./shuttle-gate [--instance PATH] COMMAND [OPTIONS]
 
 Global options:
-  --instance PATH         Use a dedicated instance directory
+  --instance PATH         Override the private XDG default instance
 
 Commands:
   init                    Create local configuration and protected directories
@@ -990,6 +1086,9 @@ def main(application_root: Path, arguments: Sequence[str] | None = None) -> int:
     values = list(sys.argv[1:] if arguments is None else arguments)
     if not values or values[0] in {"-h", "--help"}:
         _print_help()
+        return 0
+    if values == ["version"]:
+        print(__version__)
         return 0
     instance_root, values = select_instance(application_root, values)
     if not values or values[0] in {"-h", "--help"}:

@@ -19,6 +19,9 @@ managed Python and locked packages in the normal user cache. Intentional
 instance state is limited to `config.yaml`, `secrets/`, `state/`, and explicit
 sensitive copies below ignored `exports/`; transient manifests, the immutable
 code bundle, socket claims, locks, and status live below `XDG_RUNTIME_DIR`.
+The default instance is private under
+`${XDG_CONFIG_HOME:-$HOME/.config}/shuttle-gate/default`; no persistent data is
+written beside application code.
 
 The toolkit creates no host interface, route, nftables rule, DNS process,
 container, or root-owned file. ID 0 inside the pasta user namespace maps to the
@@ -48,12 +51,14 @@ Only that exact lock file and a volatile output directory are writable. Digests
 and schema bounds are checked both before service creation and inside the
 sandbox.
 
-Short-lived operator sandboxes expose application code read-only and the
-selected instance at their original absolute host paths. This makes printed
-paths truthful without exposing sibling or parent host content. Sensitive
-exports are restricted to one direct file below the private `exports/`
-directory; paths outside it and symbolic links are rejected. Broad, missing,
-overlapping, and control-character instance paths are rejected before mounting.
+Short-lived operator sandboxes expose immutable application code read-only and
+the selected instance at their original absolute host paths. The roots must be
+separate and non-overlapping. This makes printed paths truthful without exposing
+sibling or parent host content. Sensitive exports are restricted to one direct
+file below the private `exports/` directory; paths outside it and symbolic links
+are rejected. Broad, missing explicit, overlapping, and control-character
+instance paths are rejected before mounting. Only an exact `init` command may
+create the known default path; retries after interruption remain safe.
 
 ## Remote SSH server contract
 

@@ -71,10 +71,21 @@ def ensure_private_directory(path: Path) -> None:
 
     if path.is_symlink():
         raise StateError(f"private directory must not be a symlink: {path}")
-    path.mkdir(mode=0o700, parents=True, exist_ok=True)
-    path.chmod(0o700)
-    if not path.is_dir():
-        raise StateError(f"expected a directory: {path}")
+    try:
+        path.mkdir(mode=0o700, parents=True, exist_ok=True)
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+        )
+    except OSError as exc:
+        raise StateError(f"cannot create or open private directory: {path}") from exc
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+            raise StateError(f"private directory ownership or type is invalid: {path}")
+        os.fchmod(descriptor, 0o700)
+    finally:
+        os.close(descriptor)
 
 
 def fsync_directory(path: Path) -> None:

@@ -42,9 +42,10 @@ uv directly and needs no Docker. Tool caches and coverage data use a temporary
 directory, so the quality gate leaves no project-local development artifacts.
 
 `./test --integration` first repeats that gate. It then creates a short-lived
-transient user service, verifies the immutable socket-claim supervisor, runs
-concurrent pasta/bubblewrap instances from unusual printable paths, proves a
-duplicate UDP tuple fails without disturbing them, and exercises WireGuard,
+transient user service, proves XDG initialization works from a physically
+read-only application tree, verifies the immutable socket-claim supervisor,
+runs concurrent pasta/bubblewrap instances from unusual printable paths, proves
+a duplicate UDP tuple fails without disturbing them, and exercises WireGuard,
 IPv4/IPv6 policy routing, and native nftables. Finally it runs the kernel tests
 in a disposable Compose service with fixed `0:0` IDs and `NET_ADMIN`. It never
 contacts an SSH server.
@@ -94,8 +95,9 @@ final boundary.
   material out of errors, logs, manifests, and test output.
 - Preserve exact bind-address exposure, read-only mounts, native nftables
   syntax checks, deterministic owned names, and manual-only remote setup.
-- Keep application and instance roots distinct in APIs. Derive unit, runtime,
-  locks, and state identity only from the canonical instance path.
+- Keep immutable application and mutable instance roots separate and
+  non-overlapping in every API. Derive unit, runtime, locks, and state identity
+  only from the canonical instance path.
 - Test IPv4 and IPv6, printable unusual paths, control-character rejection,
   concurrent instances, socket conflicts, failure rollback, permissions, stale
   state, redaction, retries, and postcondition verification.

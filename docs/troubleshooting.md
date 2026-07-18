@@ -9,6 +9,17 @@ Start with:
 ./shuttle-gate logs --tail 200
 ```
 
+## The default instance is not initialized
+
+Run `./shuttle-gate init`. It creates the private default at
+`${XDG_CONFIG_HOME:-$HOME/.config}/shuttle-gate/default` and prints the exact
+configuration path. A relative `XDG_CONFIG_HOME` is invalid under the XDG base
+directory rules and is ignored in favor of `$HOME/.config`.
+
+The default does not depend on CWD or the application installation path. For a
+different profile, first create a private directory and then consistently use
+`--instance PATH`. Explicit paths are never created implicitly.
+
 ## uv or a runtime program is unavailable
 
 Install the runtime packages listed in the README. The first launch may need
