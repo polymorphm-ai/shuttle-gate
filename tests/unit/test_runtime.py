@@ -37,6 +37,7 @@ from shuttle_gate.runtime import (
     sshuttle_arguments,
     sshuttle_target,
 )
+from shuttle_gate.sshuttle_entry import ADAPTER_FAILURE_EXIT
 
 from .conftest import config_data
 from .fakes import FakeRunner
@@ -209,6 +210,7 @@ def test_namespace_sysctls_are_fixed_and_failure_is_fatal(
     values = (
         "net/ipv4/conf/all/src_valid_mark",
         "net/ipv4/ip_forward",
+        "net/ipv6/bindv6only",
         "net/ipv6/conf/all/forwarding",
     )
     for relative in values:
@@ -415,6 +417,18 @@ def test_sshuttle_start_waits_for_ready_and_reports_early_exit(
         gateway._start_sshuttle(())
     assert exit_socket.closed
 
+    permanent_socket = FakeNotifySocket([b"unused"])
+    monkeypatch.setattr(socket, "socket", lambda *_args: permanent_socket)
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda _args, env: as_process(FakeProcess(returncode=ADAPTER_FAILURE_EXIT)),
+    )
+    with pytest.raises(RuntimeFailure, match=f"status {ADAPTER_FAILURE_EXIT}") as raised:
+        gateway._start_sshuttle(())
+    assert not isinstance(raised.value, TransientRuntimeFailure)
+    assert permanent_socket.closed
+
 
 def test_stop_process_escalates_after_timeout() -> None:
     process = FakeProcess()
@@ -532,7 +546,7 @@ def test_runtime_status_snapshot_maps_public_keys_without_exposing_secrets(
         "server-private\tserver-public\t51820\toff\n"
         "bad\n"
         f"{phone_public}\tpsk\t192.0.2.2:1234\t10.77.0.2/32\t123\t10\t20\t25\n"
-        "unknown\tpsk\t\t\t0\t0\t0\t0\n"
+        "unknown\tpsk\t(none)\t\t0\t0\t0\toff\n"
     )
     fake = FakeRunner()
     fake.results[("wg", "show", "wg0", "dump")] = CommandResult(
@@ -554,7 +568,15 @@ def test_runtime_status_snapshot_maps_public_keys_without_exposing_secrets(
     assert value["peers"][0]["name"] == "phone"
     assert value["peers"][1]["name"] == "unknown"
     assert value["peers"][1]["endpoint"] is None
+    assert value["peers"][1]["persistent_keepalive"] == 0
     assert "server-private" not in json.dumps(value)
+
+    invalid_dump = dump.replace("\t123\t10\t20\t25\n", "\tinvalid\t10\t20\t25\n")
+    fake.results[("wg", "show", "wg0", "dump")] = CommandResult(
+        ("wg", "show", "wg0", "dump"), 0, invalid_dump, ""
+    )
+    with pytest.raises(RuntimeFailure, match="invalid handshake time"):
+        gateway._write_status("ready")
 
 
 def test_run_gateway_always_cleans_runtime(

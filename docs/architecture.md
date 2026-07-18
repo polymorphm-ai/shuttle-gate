@@ -104,9 +104,23 @@ An owned nftables forward chain defaults to drop, so uncaptured traffic cannot
 escape directly through pasta.
 
 sshuttle's fixed `nft-tproxy` method name is redirected in memory to the
-project implementation. No installed package or cache file is patched. Each
-nftables transaction is syntax-checked with `nft --check` before atomic apply;
-no legacy firewall frontend is used.
+project implementation. sshuttle re-executes its own `argv[0]` for the firewall
+manager, but a module path inside the immutable zip bundle is not a real file.
+The adapter therefore atomically publishes a static two-line entry script in
+the namespace-private `/tmp` and points sshuttle at it. The script imports the
+same read-only bundle through `PYTHONPATH`; namespace destruction removes it.
+No installed package or cache file is patched. Each nftables transaction is
+syntax-checked with `nft --check` before atomic apply; no legacy firewall
+frontend is used.
+
+For dual-stack listeners, the runtime enables `net.ipv6.bindv6only` inside the
+private network namespace so sshuttle can bind distinct IPv4 and IPv6 sockets
+to one selected port. This does not change the host sysctl.
+
+The adapter disables sshuttle's local system-resolver cache flush. No resolver
+daemon or cache runs inside the namespace, and phone DNS is forwarded directly
+to the configured upstream, so a host-oriented `resolvectl` call has no target
+or useful effect there.
 
 ## DNS and IPv6
 

@@ -27,6 +27,7 @@ from .launch import validate_launch_manifest
 from .nft_tproxy import render_tproxy_table
 from .render import render_server_config
 from .runner import Runner, SubprocessRunner
+from .sshuttle_entry import ADAPTER_FAILURE_EXIT
 from .state import locked_state_view
 
 INTERFACE = "wg0"
@@ -213,6 +214,20 @@ def nft_filter(config: ProjectConfig) -> str:
     return "\n".join(rules) + "\n"
 
 
+def _wireguard_number(value: str, label: str, *, allow_off: bool = False) -> int:
+    """Parse one non-negative field from stable `wg show ... dump` output."""
+
+    if allow_off and value == "off":
+        return 0
+    try:
+        number = int(value)
+    except ValueError as exc:
+        raise RuntimeFailure(f"WireGuard reported an invalid {label}") from exc
+    if number < 0:
+        raise RuntimeFailure(f"WireGuard reported an invalid {label}")
+    return number
+
+
 @dataclass
 class GatewayRuntime:
     """Own and clean every mutable object in the gateway namespace."""
@@ -325,7 +340,12 @@ class GatewayRuntime:
                 }
             )
         if 6 in families:
-            values["net/ipv6/conf/all/forwarding"] = "1\n"
+            values.update(
+                {
+                    "net/ipv6/bindv6only": "1\n",
+                    "net/ipv6/conf/all/forwarding": "1\n",
+                }
+            )
         for relative, value in values.items():
             try:
                 (self.sysctl_root / relative).write_text(value, encoding="ascii")
@@ -433,9 +453,12 @@ class GatewayRuntime:
             deadline = time.monotonic() + self.config.backend.startup_timeout_seconds
             while time.monotonic() < deadline:
                 if self.sshuttle.poll() is not None:
-                    raise TransientRuntimeFailure(
+                    failure_message = (
                         f"sshuttle exited during startup with status {self.sshuttle.returncode}"
                     )
+                    if self.sshuttle.returncode == ADAPTER_FAILURE_EXIT:
+                        raise RuntimeFailure(failure_message)
+                    raise TransientRuntimeFailure(failure_message)
                 try:
                     message = notify_socket.recv(4096)
                 except TimeoutError:
@@ -461,16 +484,21 @@ class GatewayRuntime:
             if len(columns) < 8:
                 continue
             public_key = columns[0]
+            endpoint = None if columns[2] in {"", "(none)"} else columns[2]
             peers.append(
                 {
                     "name": peer_names.get(public_key, "unknown"),
                     "public_key": public_key,
-                    "endpoint": columns[2] or None,
+                    "endpoint": endpoint,
                     "allowed_ips": columns[3].split(",") if columns[3] else [],
-                    "latest_handshake": int(columns[4]),
-                    "received_bytes": int(columns[5]),
-                    "sent_bytes": int(columns[6]),
-                    "persistent_keepalive": int(columns[7]),
+                    "latest_handshake": _wireguard_number(columns[4], "handshake time"),
+                    "received_bytes": _wireguard_number(columns[5], "received byte count"),
+                    "sent_bytes": _wireguard_number(columns[6], "sent byte count"),
+                    "persistent_keepalive": _wireguard_number(
+                        columns[7],
+                        "persistent keepalive",
+                        allow_off=True,
+                    ),
                 }
             )
         return peers
