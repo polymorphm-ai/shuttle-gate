@@ -72,10 +72,8 @@ routing:
     - "fd20:1234::/48"
 ```
 
-Networks must be unique and use only families present in
-`wireguard.gateway_addresses`. Explicit default routes are allowed, so one
-family can use a default while another uses narrower routes. Networks entirely
-inside multicast space are rejected; multicast and limited broadcast remain
+Default routes are allowed. Networks must be unique, use configured WireGuard
+families, and not be entirely multicast. Multicast and limited broadcast remain
 excluded from broader routes.
 
 Full routing is a shorthand that omits `networks`:

@@ -41,13 +41,10 @@ tests, and launchers, then pytest with branch coverage of at least 90%. It uses
 uv directly and needs no Docker. Tool caches and coverage data use a temporary
 directory, so the quality gate leaves no project-local development artifacts.
 
-`./test --integration` first repeats that gate. It then creates a short-lived
-transient user service, proves XDG initialization works from a physically
-read-only application tree, verifies the immutable socket-claim supervisor,
-runs concurrent pasta/bubblewrap instances from unusual printable paths, proves
-a duplicate UDP tuple fails without disturbing them, and exercises WireGuard,
-IPv4/IPv6 policy routing, and native nftables. Finally it runs the kernel tests
-in a disposable Compose service with fixed `0:0` IDs and `NET_ADMIN`. It never
+`./test --integration` repeats that gate, then exercises the rootless service,
+read-only installation, concurrent instances, socket conflicts, WireGuard,
+IPv4/IPv6 policy routing, and native nftables. Kernel tests run both through the
+native pasta/bubblewrap path and in a disposable Compose service. No test
 contacts an SSH server.
 
 ## Interruption-safe state changes

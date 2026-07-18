@@ -16,7 +16,7 @@ uses systemd user services, pasta, and bubblewrap.
 - `./shuttle-gate doctor` checks host tools, namespaces, kernel networking, SSH, and remote Python.
 - `./shuttle-gate up`, `status`, `logs`, and `down` manage the user service.
 - `./test` runs lock checks, Ruff, strict mypy, and unit tests with 90% coverage.
-- `./test --integration` adds native namespace tests and fixed-ID Docker tests.
+- `./test --integration` adds native namespace and container kernel tests.
 
 Do not create a project virtual environment or install Python packages directly.
 Locked scripts obtain Python 3.14+ and packages through uv's user cache.
@@ -48,12 +48,10 @@ success, and fail closed. See `docs/development.md` for recovery rules.
 Use current native Linux interfaces. Keep host network state unchanged and
 confine runtime effects to the rootless namespace. Mount configuration, secrets,
 and state with minimum access. Never let the toolkit modify the SSH server; it
-may only print manual key-setup instructions. Keep host-facing paths valid
-outside the sandbox; explicit phone-config copies belong only below the ignored
-`exports/` directory. Keep immutable application roots read-only and separate
-from mutable instances. Pass `InstancePaths` explicitly across sandbox contexts;
-never use service-only mount paths in operator code. Derive runtime identity
-from canonical instance paths and fail closed on duplicate host UDP tuples.
+may only print manual key-setup instructions. Keep immutable application roots
+separate from mutable instances, pass instance paths explicitly across sandbox
+boundaries, and derive runtime identity from canonical instance paths. Fail
+closed on resource conflicts.
 
 Use short Conventional Commit subjects. Pull requests must describe behavior
 and security impact, list tests run, and separate unrelated refactors.

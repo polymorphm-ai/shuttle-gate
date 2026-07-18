@@ -23,10 +23,9 @@ The remaining examples use the XDG default. For an explicit instance, add
 ./shuttle-gate init
 ```
 
-This safely creates the default instance when needed, including private
-`config.yaml`, `secrets/`, and `state/` paths. It does not write to the
-application directory, install host packages, or change host networking. Edit
-the configuration path printed by `init`:
+This creates private `config.yaml`, `secrets/`, and `state/` paths without
+writing to the application directory or changing host networking. Edit the
+configuration path printed by `init`:
 
 - bind only exact addresses already owned by the laptop;
 - set an endpoint address or name reachable by the phone;
@@ -36,13 +35,8 @@ the configuration path printed by `init`:
 
 See [Configuration](configuration.md) for all fields.
 
-Instance paths are canonicalized, so symlink aliases select the same instance.
-Spaces, Unicode, shell punctuation, and components beginning with whitespace or
-`-` are supported. Quote such paths in the calling shell. Control characters,
-missing explicit instance directories, `/`, the user's home directory, and
-paths overlapping the immutable application directory are rejected. Only
-`init` creates a missing default instance; an explicit instance must already
-exist.
+An explicit instance must already exist and must not overlap the application
+directory. Printable unusual paths are supported; quote them in the shell.
 
 ## 2. Prepare SSH authentication
 
@@ -51,9 +45,8 @@ exist.
 ./shuttle-gate ssh-key instructions
 ```
 
-Generation prints an operation ID before changing local files. If interrupted,
-repeat with `--operation-id ID`; a durable receipt prevents a second key from
-being generated. Use `--force` only for intentional replacement.
+Generation prints an operation ID. If interrupted, repeat with
+`--operation-id ID`; use `--force` only for intentional replacement.
 
 The instructions command only prints commands. The toolkit never runs
 `ssh-copy-id`, `ssh-keyscan`, or anything that modifies the SSH server. If you
@@ -74,23 +67,19 @@ An existing dedicated key may instead be placed at its configured path under
 ```
 
 Repeated generation preserves existing keys. Each peer receives separate key
-material and a configuration under `state/current/peers/NAME/`. `current` is an
-atomic pointer to a crash-consistent generation; never edit below it.
-`keys generate --peer NAME` provisions only the server and named peer and
-refreshes only that peer's configuration; without `--peer`, it provisions and
-refreshes every declared peer. `peers list` reports each derived config as
-`current`, `stale`, or `missing`.
+material and a configuration under `state/current/peers/NAME/`; never edit
+generated state. `keys generate --peer NAME` affects only that peer, while the
+command without `--peer` covers every declared peer. `peers list` reports each
+configuration as `current`, `stale`, or `missing`.
 
 `phone-config NAME` regenerates only that peer's derived configuration. Other
 peer files remain unchanged, even if they are missing or stale. Startup checks
 that every declared peer is complete and current.
 
-`phone-config --output exports/FILE` writes an atomic mode-`0600` copy below
-the private, ignored `exports/` directory. Only one direct `exports/FILE`
-destination is accepted; absolute, nested, and symlinked paths are rejected to
-prevent publication outside the selected instance. `--stdout` exposes private
-material to the terminal and should normally be avoided. Transfer the file
-securely and remove extra copies.
+`phone-config --output exports/FILE` writes a mode-`0600` copy below the
+private, ignored `exports/` directory. Other destinations are rejected.
+`--stdout` exposes private material to the terminal and should normally be
+avoided. Transfer the file securely and remove extra copies.
 
 Stop the gateway before generating, rotating, pruning, or regenerating state.
 If a rotation outcome is unknown, repeat the same operation ID:
@@ -111,20 +100,17 @@ configuration; re-import all of them.
 ./shuttle-gate status
 ```
 
-`doctor` checks host programs, the systemd user manager, exact UDP binding, and
-then uses a disposable pasta/bubblewrap namespace to test WireGuard, native
-nftables TPROXY for configured IP families, strict SSH, and remote Python. Its
-remote action is a bounded version check; it writes no remote file.
+`doctor` checks host programs, UDP binding, namespace networking, strict SSH,
+and remote Python. Its remote action is a bounded version check and writes no
+remote file.
 
 `up` starts a transient systemd user service. It exposes only the configured UDP
 socket through pasta; all gateway networking stays in its rootless namespace.
 The phone still needs firewall/NAT permission to reach that socket. The toolkit
 does not modify host firewall policy.
 
-Different instances have independent units, locks, state, namespaces, and
-credentials. Their inner addresses may repeat, but their exact host
-address/UDP-port tuples must not. A lifetime lock rejects duplicate tuples
-before starting pasta and leaves existing instances running.
+Instances have independent services, state, namespaces, and credentials. Their
+inner addresses may repeat, but exact host address/UDP-port tuples must not.
 
 ## 5. Operate and stop
 

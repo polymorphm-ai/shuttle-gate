@@ -90,8 +90,7 @@ valid test because ICMP is unsupported; use a real TCP or UDP client.
 
 For DNS, the configured upstream must be an explicit IP covered by routing and
 reachable from the SSH server. The phone names it directly, and both UDP and
-TCP use the ordinary routed proxy. There is no separately exposed resolver,
-cache, or imported host search domain. Re-import the phone configuration after
+TCP use the ordinary routed proxy. Re-import the phone configuration after
 changing DNS.
 
 Only unicast UDP is captured. Broadcast/multicast discovery, ICMP, raw
@@ -109,25 +108,12 @@ An IPv6 link-local bind requires `%HOST_INTERFACE`. A link-local
 `endpoint_host` separately requires the interface scope used by the client;
 using the laptop's interface name there is normally wrong for a phone.
 
-## State or shutdown was interrupted
+## State, lock, or launch problem
 
 Run `./shuttle-gate down`, then repeat the operation. Namespace destruction
 removes all runtime networking; persistent keys are not deleted. State writers
 reconcile staging directories and publish only through atomic `state/current`.
 Never hand-edit a generation or remove lock files.
-
-Stop the gateway before moving or renaming its instance directory. The canonical
-instance path identifies its transient unit and XDG runtime directory; a moved
-directory is intentionally a new instance. Moving application source does not
-change instance identity, but `up` refuses to resume an active gateway when its
-current application bundle differs. Run `down` for that instance, then start the
-new code intentionally.
-
-If `up` reports that a host UDP socket is unavailable or already in use, another
-instance or host process owns the same exact address/port tuple. Select another
-bind address or listen port. Do not remove claim files: they are session-local
-under `XDG_RUNTIME_DIR`, and the supervising service holds the actual lock for
-its complete lifetime.
 
 Reuse the printed operation ID when a key command's outcome is unknown. A busy
 state means the gateway or another writer owns the lock; stop it or wait. If
@@ -138,9 +124,19 @@ If `up` reports missing or stale peer material, inspect `peers list`. Use
 `keys generate --peer NAME` for missing keys and `phone-config NAME` for a
 missing, modified, or stale generated configuration.
 
+Stop the gateway before moving its instance directory; the canonical path is
+the instance identity, so the new path names a new instance. Moving application
+code does not change that identity, but changed code requires `down` and `up`
+before it can replace an active launch.
+
+## Host UDP socket is unavailable
+
+Another instance or host process owns the configured address/port tuple. Select
+another bind address or listen port. Do not remove claim files: the supervising
+service holds the real lifetime lock.
+
 ## Docker integration tests fail
 
 Docker is not part of production. It is required only by
 `./test --integration`, after the native pasta/bubblewrap tests pass. Confirm the
-daemon and Compose plugin are available. The disposable service runs as fixed
-`0:0` inside its isolated test environment; host UID/GID values are not read.
+daemon and Compose plugin are available.

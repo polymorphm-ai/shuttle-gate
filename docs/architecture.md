@@ -20,74 +20,52 @@ bubblewrap runtime sandbox
                               target service
 ```
 
-`./shuttle-gate` is a locked PEP 723 script. uv supplies Python and application
-packages from its user cache. The application root contains code and the
-configuration template; the canonical instance root contains `config.yaml`,
-`secrets/`, `state/`, and `exports/`. They are always separate. The application
-is immutable; the default instance is the private XDG configuration profile at
-`${XDG_CONFIG_HOME:-$HOME/.config}/shuttle-gate/default`, and `--instance PATH`
-selects another existing directory. The canonical instance path hashes to its
-transient unit and XDG runtime names.
+`./shuttle-gate` is a locked PEP 723 script; uv supplies Python and packages
+from its user cache. Application code is immutable and separate from each
+instance's `config.yaml`, `secrets/`, `state/`, and `exports/`. The canonical
+instance path determines transient service and runtime identities.
 
-The launcher validates host inputs, creates an immutable application zip and
-launch manifest below `XDG_RUNTIME_DIR`, and asks the systemd user manager to
-start one transient service. It first probes every exact UDP socket without
-address reuse, detecting an existing non-toolkit listener. An immutable
-supervisor then locks every tuple through deterministic session-local claim
-files and starts pasta. It holds all claims until pasta exits. Ordered
-non-blocking locks allow independent instances and reject overlap without
-disturbing an existing owner.
+The launcher validates host inputs, builds an immutable application bundle and
+launch manifest below `XDG_RUNTIME_DIR`, and starts a transient systemd user
+service. A supervisor holds each exact host UDP socket claim for the service
+lifetime. Overlap fails before pasta starts and does not disturb other
+instances.
 
-Short-lived operator commands also run in bubblewrap. The application is
-mounted read-only; the instance is read-only for `doctor` and writable for local
-management commands. Both retain their absolute host pathnames, so printed
-paths remain valid after the sandbox exits. Parent directories are
-namespace-only scaffolding; sibling host content is not exposed.
+`pasta` creates the rootless user and network namespaces. ID 0 inside maps to
+the calling user and grants no host root access. Only configured WireGuard UDP
+sockets are forwarded. `bubblewrap` retains namespace-local `CAP_NET_ADMIN` and
+mounts the bundle, configuration, credentials, and state read-only.
+Host-backed write access is limited to the state lock and bounded runtime
+output; temporary files stay in the private namespace.
 
-The outer launcher allowlists public operator commands. Runtime-only entry
-points cannot be dispatched into this sandbox because their fixed mount paths
-exist only in the long-running service sandbox.
-
-`pasta` creates the rootless user/network namespace. ID 0 inside maps to the
-calling user outside; it grants no host root access. Automatic TCP and reverse
-port forwarding are disabled. Only each validated WireGuard UDP address/port is
-forwarded. `bubblewrap` then drops all capabilities except namespace-local
-`CAP_NET_ADMIN` and exposes only system runtime files, the immutable application
-zip, read-only configuration/secrets/state, the exact state lock, and writable
-volatile output. Neither the application tree nor the full instance tree is
-mounted into the service.
+Short-lived operator commands use a separate bubblewrap sandbox. Host paths
+remain stable for truthful output, while unrelated parent and sibling content
+is hidden.
 
 Production never invokes Docker. Docker Compose exists only for a second,
 disposable integration-test environment.
 
 ## Durable state and launch publication
 
-Only an exact `init` request may create a missing default instance. It creates
-private XDG parent directories in ordered, fsynced steps; interruption can leave
-only safe directories, and retry converges. Explicit instance directories must
-already exist, preventing accidental path creation from mistyped arguments.
+Only `init` may create the known default instance. Explicit instance
+directories must already exist, preventing accidental creation from mistyped
+paths.
 
 WireGuard keys, peer configurations, fingerprints, and operation receipts live
-in immutable directories under `state/generations/`. A writer constructs and
-validates a private staging generation, fsyncs it, renames it, then atomically
-replaces `state/current`. An instance `flock` serializes writers. Readers hold a
-shared lock while using the resolved generation. A generation is structurally
-complete but may represent partial provisioning: selected-peer commands change
-only their named peer. Startup separately requires every declared peer key and
-phone configuration to be complete and current.
+in immutable `state/generations/` directories. Writers validate and fsync a
+private staging generation before atomically publishing `state/current`.
+Readers bind to one generation under a shared lock; writers are serialized.
+Peer-scoped commands change only the named peer, while startup requires every
+declared peer to be complete and current.
 
 Non-idempotent rotations publish an operation-ID receipt with their result, so
 a retry cannot rotate twice. SSH identity replacement uses a durable journal
 and backups until both key files and the state receipt are verified.
 
-The host builds a deterministic application zip and atomically publishes a
-schema-versioned launch manifest. Digests bind the launch ID, systemd unit,
-configuration, credentials, state generation, application bundle, and exact
-bind sockets. The sandbox validates every digest again before changing its
-network namespace. Lifecycle calls use a separate instance lock; a valid running
-launch is resumed rather than replaced. Resumption also compares the active
-bundle digest with current application source, so another code version cannot
-silently take over an active instance.
+The launch manifest binds the service, configuration, credentials, state
+generation, application bundle, and host sockets by digest. The sandbox checks
+it again before changing networking. A compatible running launch is reused;
+changed code or inputs require an intentional restart.
 
 ## Packet flow
 
@@ -100,54 +78,29 @@ silently take over an active instance.
 5. A temporary Python process opens connections from the remote user's normal
    context; it writes no remote file and exits with the session.
 
-The namespace has no transparent-proxy `output` hook. WireGuard transport
-replies, SSH, and other locally generated control traffic therefore use normal
-kernel routing and cannot loop into sshuttle. Peer networks, multicast, and
-limited broadcast are excluded from forwarded selection. An owned nftables
-forward chain defaults to drop, so uncaptured traffic cannot escape directly
-through pasta. An input chain also drops unmarked `wg0` traffic to
-namespace-local services; only packets already selected by TPROXY can reach the
-wildcard proxy sockets.
+The transparent proxy has only a `wg0`-scoped `prerouting` hook. Local
+WireGuard and SSH control traffic therefore follows normal namespace routing
+and cannot loop into sshuttle. Peer networks, multicast, and limited broadcast
+are excluded. Input and forward chains drop uncaptured peer traffic, preventing
+direct pasta egress or access to namespace-local services.
 
-IPv4 reverse-path validation ignores the one-way TPROXY mark and uses normal
-namespace routes. Transparent UDP replies retain remote source ports, so this
-private namespace has no privileged-port range while the service continues to
-run without `CAP_NET_BIND_SERVICE`.
+The project nftables adapter creates family-specific TPROXY rules. Each ruleset
+is syntax-checked before atomic application. Required compatibility settings
+are limited to the private namespace; host routing, firewall, and sysctls are
+unchanged.
 
-sshuttle's fixed `nft-tproxy` method name is redirected in memory to the
-project implementation. sshuttle re-executes its own `argv[0]` for the firewall
-manager, but a module path inside the immutable zip bundle is not a real file.
-The adapter therefore atomically publishes a static two-line entry script in
-the namespace-private `/tmp` and points sshuttle at it. The script imports the
-same read-only bundle through `PYTHONPATH`; namespace destruction removes it.
-No installed package or cache file is patched. Each nftables transaction is
-syntax-checked with `nft --check` before atomic apply; no legacy firewall
-frontend is used.
+## Address families and DNS
 
-For dual-stack listeners, the runtime enables `net.ipv6.bindv6only` inside the
-private network namespace so sshuttle can bind distinct IPv4 and IPv6 sockets
-to one selected port. This does not change the host sysctl.
+When DNS is enabled, phone configurations name one explicit upstream IP. DNS
+uses the same routed TCP/UDP path as other traffic; no separate forwarder is
+started.
 
-The adapter disables sshuttle's unconditional system-resolver cache flush
-because no resolver daemon or cache runs inside the private namespace.
+If `ssh.host` is a name, the sandbox receives a read-only uplink resolver file
+for SSH bootstrap. Host resolver settings are never copied to phone peers.
 
-## DNS and IPv6
-
-There is no DNS forwarder or special DNS listener. When DNS is enabled, phone
-configurations name the explicit upstream IP directly, and its TCP/UDP traffic
-uses the ordinary routed proxy. The upstream must be outside WireGuard gateway
-networks, inside selected routes, and in an address family present on every peer.
-
-The sandbox separately needs bootstrap name resolution when `ssh.host` is a
-hostname. A host loopback resolver cannot be reached from the namespace, so the
-launcher mounts systemd-resolved's uplink resolver file when present, otherwise
-the resolved host `/etc/resolv.conf`. This data is read-only and is never sent
-to phone peers.
-
-IPv4-only, IPv6-only, and dual-stack routed traffic is supported. IPv6 target
-traffic requires peer/gateway addressing, an IPv6 route, and remote target
-access. An IPv6 outer WireGuard endpoint additionally requires an exact IPv6
-host bind. IPv6 is never silently disabled.
+IPv4-only, IPv6-only, and dual-stack routing are supported. Each family needs
+matching gateway/peer addresses and routes; the SSH host must be able to reach
+the target. An IPv6 WireGuard endpoint also needs an exact reachable host bind.
 
 ## Lifecycle and recovery
 

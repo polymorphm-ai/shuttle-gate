@@ -1,9 +1,9 @@
 # shuttle-gate
 
 `shuttle-gate` is a rootless WireGuard-to-SSH gateway for Linux. A phone
-connects to one exact laptop address. Selected or full-route IPv4/IPv6 TCP,
-unicast UDP, and DNS traffic then travels through an existing SSH account by
-way of sshuttle.
+connects to the laptop through WireGuard; routed IPv4/IPv6 TCP, unicast UDP,
+and DNS traffic then travels through an existing SSH account by way of
+sshuttle.
 
 Production does not use Docker and does not change host networking. A transient
 systemd user service starts `pasta`, which creates a private user/network
@@ -30,11 +30,11 @@ tools with:
 sudo pacman -S --needed uv passt bubblewrap iproute2 nftables wireguard-tools openssh
 ```
 
-The first command may download a compatible Python 3.14+ interpreter and locked
-packages into uv's user cache. Later launches reuse that cache.
+The first shuttle-gate or test invocation may download a compatible Python
+3.14+ interpreter and locked packages into uv's user cache. Later launches
+reuse that cache.
 
-Docker Engine with Compose is required only for `./test --integration`. Those
-tests use fixed container IDs and do not derive UID/GID values from the host.
+Docker Engine with Compose is required only for `./test --integration`.
 
 ## Start here
 
@@ -76,11 +76,9 @@ cd -- /home/me/shuttle-gate-office
 /path/to/shuttle-gate --instance . status
 ```
 
-Application and instance directories must be separate and non-overlapping. A
-canonical instance path identifies its state, lock, transient systemd unit, and
-XDG runtime directory. Instances may run together when every host
-address/UDP-port tuple is distinct; a duplicate tuple fails closed without
-disturbing the running owner.
+Application and instance directories must be separate and non-overlapping.
+Instances may run together when every host address/UDP-port tuple is distinct;
+conflicts fail without disturbing a running instance.
 
 The service belongs to the current user manager and normally stops with that
 manager. The toolkit never enables lingering. If operation after logout is
@@ -90,11 +88,10 @@ after reviewing the host-policy impact.
 ## Traffic contract
 
 Supported traffic is TCP, general unicast UDP, and optional DNS over declared
-IPv4/IPv6 routes. `routing.mode: full` derives `0.0.0.0/0` and/or `::/0`;
-selected mode may explicitly combine a default for one family with narrower
-routes for another. This is not a packet-level VPN: ICMP, raw IP, multicast,
+IPv4/IPv6 routes. This is not a packet-level VPN: ICMP, raw IP, multicast,
 broadcast, and Layer 2 are not forwarded. Some long-lived or unusual UDP
-applications may be incompatible with sshuttle.
+applications may be incompatible with sshuttle. See the
+[configuration reference](docs/configuration.md#routing) for route selection.
 
 ## Documentation
 
