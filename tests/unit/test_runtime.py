@@ -209,21 +209,25 @@ def test_namespace_sysctls_are_fixed_and_failure_is_fatal(
     tmp_path: Path,
 ) -> None:
     sysctls = tmp_path / "sys"
-    values = (
-        "net/ipv4/conf/all/src_valid_mark",
-        "net/ipv4/ip_forward",
-        "net/ipv6/bindv6only",
-        "net/ipv6/conf/all/forwarding",
-    )
-    for relative in values:
+    expected = {
+        "net/ipv4/ip_unprivileged_port_start": "0\n",
+        "net/ipv4/conf/all/src_valid_mark": "0\n",
+        "net/ipv4/conf/default/src_valid_mark": "0\n",
+        "net/ipv4/ip_forward": "0\n",
+        "net/ipv6/bindv6only": "1\n",
+        "net/ipv6/conf/all/forwarding": "0\n",
+    }
+    for relative, value in expected.items():
         path = sysctls / relative
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("0\n", encoding="ascii")
+        path.write_text("1\n" if value == "0\n" else "0\n", encoding="ascii")
     gateway = GatewayRuntime(config, instance, tmp_path / "runtime", sysctl_root=sysctls)
 
     gateway._configure_namespace()
 
-    assert all((sysctls / relative).read_text(encoding="ascii") == "1\n" for relative in values)
+    assert {
+        relative: (sysctls / relative).read_text(encoding="ascii") for relative in expected
+    } == expected
 
     ipv4_data = config_data()
     ipv4_data["wireguard"]["gateway_addresses"] = ["10.77.0.1/24"]
@@ -233,10 +237,15 @@ def test_namespace_sysctls_are_fixed_and_failure_is_fatal(
     ipv4_data["dns"] = {"enabled": False}
     ipv4 = ProjectConfig.model_validate(ipv4_data)
     ipv4_sysctls = tmp_path / "ipv4-sys"
-    for relative in values[:2]:
+    for relative in (
+        "net/ipv4/ip_unprivileged_port_start",
+        "net/ipv4/conf/all/src_valid_mark",
+        "net/ipv4/conf/default/src_valid_mark",
+        "net/ipv4/ip_forward",
+    ):
         path = ipv4_sysctls / relative
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("0\n", encoding="ascii")
+        path.write_text("1\n", encoding="ascii")
     GatewayRuntime(
         ipv4,
         instance,
