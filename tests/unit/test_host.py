@@ -47,7 +47,7 @@ def test_runtime_paths_use_private_xdg_location(
 ) -> None:
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
 
-    first = host.runtime_paths(Path("/project"))
+    first = host.runtime_paths(Path("/instance"))
     second = host.runtime_paths(Path("/other"))
 
     assert first.root.parent.parent == tmp_path
@@ -56,10 +56,10 @@ def test_runtime_paths_use_private_xdg_location(
 
     monkeypatch.delenv("XDG_RUNTIME_DIR")
     with pytest.raises(HostError, match="systemd user session"):
-        host.runtime_paths(Path("/project"))
+        host.runtime_paths(Path("/instance"))
     monkeypatch.setenv("XDG_RUNTIME_DIR", "relative")
     with pytest.raises(HostError, match="absolute"):
-        host.runtime_paths(Path("/project"))
+        host.runtime_paths(Path("/instance"))
 
 
 def test_instance_selection_accepts_unusual_printable_paths_and_canonicalizes_aliases(
@@ -235,14 +235,24 @@ def test_namespace_commands_have_fixed_boundaries_and_exposure(
     runtime = _runtime(tmp_path)
     application = tmp_path / "application"
     application.mkdir()
-    root = tmp_path / "instance"
-    for path in (root / "secrets", root / "state", runtime.inputs, runtime.output):
+    instance_root = tmp_path / "instance"
+    for path in (
+        instance_root / "secrets",
+        instance_root / "state",
+        runtime.inputs,
+        runtime.output,
+    ):
         path.mkdir(parents=True, exist_ok=True)
-    for path in (root / "config.yaml", root / "state/.state.lock", runtime.launch, runtime.bundle):
+    for path in (
+        instance_root / "config.yaml",
+        instance_root / "state/.state.lock",
+        runtime.launch,
+        runtime.bundle,
+    ):
         path.touch()
 
     operator = host.bubblewrap_command(
-        root,
+        instance_root,
         ["/python", "-m", "shuttle_gate", "keys", "generate"],
         network_namespace=False,
         instance_read_only=False,
@@ -250,13 +260,13 @@ def test_namespace_commands_have_fixed_boundaries_and_exposure(
     )
     assert "--unshare-user" in operator
     assert "--unshare-net" in operator
-    assert ["--bind", str(root.resolve()), str(root.resolve())] == operator[
+    assert ["--bind", str(instance_root.resolve()), str(instance_root.resolve())] == operator[
         operator.index("--bind") : operator.index("--bind") + 3
     ]
     assert operator[-6:] == ["--", "/python", "-m", "shuttle_gate", "keys", "generate"]
 
     gateway = host.bubblewrap_command(
-        root,
+        instance_root,
         ["/python", "-m", "shuttle_gate", "runtime"],
         network_namespace=True,
         instance_read_only=True,
@@ -269,14 +279,14 @@ def test_namespace_commands_have_fixed_boundaries_and_exposure(
         "--cap-add",
         "CAP_NET_ADMIN",
     ]
-    assert str(root.resolve()) not in gateway
+    assert str(instance_root.resolve()) not in gateway
     assert ["--bind", str(runtime.output), "/run/shuttle-gate/output"] == gateway[
         gateway.index(str(runtime.output)) - 1 : gateway.index(str(runtime.output)) + 2
     ]
     assert gateway[gateway.index("--chdir") + 1] == "/"
-    assert operator[operator.index("--chdir") + 1] == str(root.resolve())
+    assert operator[operator.index("--chdir") + 1] == str(instance_root.resolve())
     root_environment = operator.index("SHUTTLE_GATE_ROOT")
-    assert operator[root_environment + 1] == str(root.resolve())
+    assert operator[root_environment + 1] == str(instance_root.resolve())
     python_environment = operator.index("PYTHONPATH")
     assert operator[python_environment + 1] == str(application.resolve() / "src")
 
@@ -294,7 +304,7 @@ def test_namespace_commands_have_fixed_boundaries_and_exposure(
     assert no_ports[no_ports.index("--udp-ports") + 1] == "none"
     with pytest.raises(ValueError, match="empty"):
         host.bubblewrap_command(
-            root,
+            instance_root,
             [],
             network_namespace=False,
             instance_read_only=False,

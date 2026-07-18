@@ -99,11 +99,11 @@ def test_load_config_rejects_unknown_and_oversized_files(tmp_path: Path) -> None
     path.write_text(yaml.safe_dump(data), encoding="utf-8")
 
     with pytest.raises(ConfigurationError, match="Extra inputs"):
-        load_config(path)
+        load_config(path, private=False)
 
     path.write_bytes(b"x" * (1024 * 1024 + 1))
     with pytest.raises(ConfigurationError, match="maximum"):
-        load_config(path)
+        load_config(path, private=False)
 
 
 @pytest.mark.parametrize("content", ["- item\n", "[bad", "\udcff"])
@@ -115,7 +115,29 @@ def test_load_config_reports_invalid_documents(tmp_path: Path, content: str) -> 
         path.write_text(content, encoding="utf-8")
 
     with pytest.raises(ConfigurationError):
+        load_config(path, private=False)
+
+
+def test_load_config_requires_a_private_regular_file(tmp_path: Path) -> None:
+    data = yaml.safe_dump(config_data())
+    path = tmp_path / "config.yaml"
+    path.write_text(data, encoding="utf-8")
+
+    with pytest.raises(ConfigurationError, match="permissions"):
         load_config(path)
+
+    path.chmod(0o600)
+    assert load_config(path).project == "test-gate"
+
+    link = tmp_path / "config-link.yaml"
+    link.symlink_to(path)
+    with pytest.raises(ConfigurationError, match="non-symlink"):
+        load_config(link)
+
+    directory = tmp_path / "config-dir"
+    directory.mkdir()
+    with pytest.raises(ConfigurationError, match="regular non-symlink"):
+        load_config(directory, private=False)
 
 
 @pytest.mark.parametrize(

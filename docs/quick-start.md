@@ -39,9 +39,10 @@ See [Configuration](configuration.md) for all fields.
 Instance paths are canonicalized, so symlink aliases select the same instance.
 Spaces, Unicode, shell punctuation, and components beginning with whitespace or
 `-` are supported. Quote such paths in the calling shell. Control characters,
-missing explicit directories, `/`, the user's home directory, and paths
-overlapping the immutable application directory are rejected. Only `init`
-creates a missing default instance; an explicit instance must already exist.
+missing explicit instance directories, `/`, the user's home directory, and
+paths overlapping the immutable application directory are rejected. Only
+`init` creates a missing default instance; an explicit instance must already
+exist.
 
 ## 2. Prepare SSH authentication
 
@@ -77,10 +78,11 @@ material and a configuration under `state/current/peers/NAME/`. `current` is an
 atomic pointer to a complete generation; never edit below it.
 
 `phone-config --output exports/FILE` writes an atomic mode-`0600` copy below
-the private, ignored `exports/` directory. Absolute, nested, and symlinked
-destinations are rejected because paths outside the operator sandbox cannot be
-published safely. `--stdout` exposes private material to the terminal and
-should normally be avoided. Transfer the file securely and remove extra copies.
+the private, ignored `exports/` directory. Only one direct `exports/FILE`
+destination is accepted; absolute, nested, and symlinked paths are rejected to
+prevent publication outside the selected instance. `--stdout` exposes private
+material to the terminal and should normally be avoided. Transfer the file
+securely and remove extra copies.
 
 Stop the gateway before generating, rotating, pruning, or regenerating state.
 If a rotation outcome is unknown, repeat the same operation ID:

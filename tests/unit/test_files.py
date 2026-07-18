@@ -19,7 +19,7 @@ from shuttle_gate.files import (
     require_regular_file,
     resolve_config_path,
     resolve_export_path,
-    sandbox_secret_path,
+    secret_relative_path,
     validate_ssh_files,
 )
 
@@ -67,17 +67,17 @@ def test_private_file_rejects_group_access_and_multiline(tmp_path: Path) -> None
         read_text_secret(path, "key")
 
 
-def test_secret_paths_are_project_relative() -> None:
-    assert sandbox_secret_path(Path("secrets/keys/id")) == Path("/secrets/keys/id")
-    paths = InstancePaths.from_root(Path("/project"))
-    assert mounted_secret_path(paths, Path("secrets/keys/id")) == Path("/project/secrets/keys/id")
+def test_secret_paths_are_instance_relative_and_context_mounted() -> None:
+    assert secret_relative_path(Path("secrets/keys/id")) == Path("keys/id")
+    paths = InstancePaths.from_root(Path("/instance"))
+    assert mounted_secret_path(paths, Path("secrets/keys/id")) == Path("/instance/secrets/keys/id")
     with pytest.raises(ConfigurationError):
-        sandbox_secret_path(Path("/tmp/id"))
+        secret_relative_path(Path("/tmp/id"))
     with pytest.raises(ConfigurationError):
-        sandbox_secret_path(Path("other/id"))
+        secret_relative_path(Path("other/id"))
 
 
-def test_export_paths_are_explicitly_project_local(tmp_path: Path) -> None:
+def test_export_paths_are_explicitly_instance_local(tmp_path: Path) -> None:
     paths = InstancePaths.from_root(tmp_path)
 
     assert resolve_export_path(paths, Path("exports/phone.conf")) == tmp_path / "exports/phone.conf"
@@ -138,7 +138,22 @@ def test_validate_ssh_files_accepts_public_known_hosts_permissions(tmp_path: Pat
     known_hosts.write_text("host key", encoding="ascii")
     known_hosts.chmod(0o644)
 
-    assert validate_ssh_files(config, tmp_path / "config.yaml") == (identity, known_hosts)
+    paths = InstancePaths.from_root(tmp_path)
+    assert validate_ssh_files(config, paths) == (identity, known_hosts)
+
+
+def test_validate_ssh_files_rejects_intermediate_symlink_escape(tmp_path: Path) -> None:
+    config = ProjectConfig.model_validate(config_data())
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    identity = outside / "id_ed25519"
+    identity.write_text("private", encoding="ascii")
+    identity.chmod(0o600)
+    (outside / "known_hosts").write_text("host key", encoding="ascii")
+    (tmp_path / "secrets").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ConfigurationError, match="resolve below"):
+        validate_ssh_files(config, InstancePaths.from_root(tmp_path))
 
 
 def test_atomic_write_removes_temporary_file_after_replace_failure(

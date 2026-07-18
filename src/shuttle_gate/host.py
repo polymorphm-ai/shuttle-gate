@@ -291,10 +291,10 @@ def _run(
     return completed
 
 
-def runtime_paths(root: Path) -> RuntimePaths:
+def runtime_paths(instance_root: Path) -> RuntimePaths:
     """Derive private XDG runtime paths and a collision-resistant unit name."""
 
-    resolved = root.resolve()
+    resolved = instance_root.resolve()
     instance_id = hashlib.sha256(os.fsencode(resolved)).hexdigest()[:20]
     xdg_value = os.environ.get("XDG_RUNTIME_DIR")
     if not xdg_value:
@@ -640,10 +640,10 @@ def systemd_run_command(
     return arguments
 
 
-def _application_bundle(root: Path) -> bytes:
+def _application_bundle(application_root: Path) -> bytes:
     """Build deterministic immutable zip import bytes from application source."""
 
-    source_root = root / "src" / "shuttle_gate"
+    source_root = application_root / "src" / "shuttle_gate"
     files = sorted(source_root.rglob("*.py"))
     if source_root / "__main__.py" not in files:
         raise HostError("application source is incomplete")
@@ -664,10 +664,10 @@ def _application_bundle(root: Path) -> bytes:
     return output.getvalue()
 
 
-def _build_application_bundle(root: Path, destination: Path) -> None:
+def _build_application_bundle(application_root: Path, destination: Path) -> None:
     """Atomically publish one deterministic application bundle."""
 
-    atomic_write_bytes(destination, _application_bundle(root), 0o600)
+    atomic_write_bytes(destination, _application_bundle(application_root), 0o600)
 
 
 def _host_state(paths: RuntimePaths) -> str:
@@ -793,10 +793,10 @@ def _check_host_socket_availability(config: ProjectConfig) -> None:
 
 
 @contextmanager
-def lifecycle_lock(root: Path) -> Iterator[None]:
+def lifecycle_lock(instance_root: Path) -> Iterator[None]:
     """Serialize lifecycle transitions for one instance."""
 
-    state = root / "state"
+    state = instance_root / "state"
     ensure_private_directory(state)
     lock_path = state / LIFECYCLE_LOCK
     try:
@@ -928,11 +928,11 @@ def _remove_known_runtime_files(paths: RuntimePaths) -> None:
         paths.root.parent.rmdir()
 
 
-def _down(root: Path, arguments: Sequence[str]) -> int:
+def _down(instance_root: Path, arguments: Sequence[str]) -> int:
     if arguments:
         raise HostError("usage: ./shuttle-gate down")
-    paths = runtime_paths(root)
-    with lifecycle_lock(root):
+    paths = runtime_paths(instance_root)
+    with lifecycle_lock(instance_root):
         result = _run(
             [_command("systemctl"), "--user", "stop", "--", paths.unit_name],
             capture=True,
@@ -949,10 +949,10 @@ def _down(root: Path, arguments: Sequence[str]) -> int:
     return 0
 
 
-def _status(root: Path, arguments: Sequence[str]) -> int:
+def _status(instance_root: Path, arguments: Sequence[str]) -> int:
     if list(arguments) not in ([], ["--json"]):
         raise HostError("usage: ./shuttle-gate status [--json]")
-    paths = runtime_paths(root)
+    paths = runtime_paths(instance_root)
     service_state = _host_state(paths)
     status = _read_status(paths) or {"schema_version": 2, "state": "stopped"}
     value = {**status, "service_state": service_state}
@@ -1030,11 +1030,11 @@ def logs_command(unit_name: str, arguments: Sequence[str]) -> list[str]:
     return command
 
 
-def _logs(root: Path, arguments: Sequence[str]) -> int:
+def _logs(instance_root: Path, arguments: Sequence[str]) -> int:
     if list(arguments) in (["-h"], ["--help"]):
         print(LOGS_USAGE)
         return 0
-    return _run(logs_command(runtime_paths(root).unit_name, arguments)).returncode
+    return _run(logs_command(runtime_paths(instance_root).unit_name, arguments)).returncode
 
 
 def _operator(
@@ -1122,10 +1122,10 @@ def main(application_root: Path, arguments: Sequence[str] | None = None) -> int:
     return _operator(application_root, instance_root, values)
 
 
-def entrypoint(root: Path) -> None:
+def entrypoint(application_root: Path) -> None:
     """Convert stable application failures to concise CLI diagnostics."""
 
     try:
-        raise SystemExit(main(root))
+        raise SystemExit(main(application_root))
     except ShuttleGateError as exc:
         _fail(str(exc))

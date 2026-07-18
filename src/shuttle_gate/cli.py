@@ -18,7 +18,6 @@ from .files import (
     atomic_write,
     ensure_private_directory,
     resolve_export_path,
-    sandbox_secret_path,
     validate_ssh_files,
 )
 from .keys import (
@@ -98,11 +97,9 @@ def validate_config() -> None:
 
     paths = instance_paths()
     config = configuration(paths)
-    sandbox_secret_path(config.ssh.identity_file)
-    sandbox_secret_path(config.ssh.known_hosts_file)
     with state_lock(paths, exclusive=True, blocking=False):
         recover_ssh_key_transaction(config, paths)
-        validate_ssh_files(config, paths.config)
+        validate_ssh_files(config, paths)
     typer.echo("configuration: valid")
 
 
@@ -229,7 +226,7 @@ def doctor() -> None:
     config = configuration(paths)
     with state_lock(paths, exclusive=False):
         require_no_ssh_key_transaction(config, paths)
-        validate_ssh_files(config, paths.config)
+        validate_ssh_files(config, paths)
         for message in doctor_checks(config, paths, SubprocessRunner()):
             typer.echo(message)
 

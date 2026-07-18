@@ -317,7 +317,7 @@ def _multi_instance_integration() -> int:
     second_port = _free_udp_port()
     while second_port == first_port:
         second_port = _free_udp_port()
-    base_config = load_config(ROOT / "config.example.yaml")
+    base_config = load_config(ROOT / "config.example.yaml", private=False)
     processes: list[subprocess.Popen[str]] = []
 
     def start(instance: Path, port: int) -> subprocess.Popen[str]:

@@ -72,11 +72,7 @@ def prepare_launch(
 
     with locked_state_view(paths, exclusive=True, blocking=False) as view:
         recover_ssh_key_transaction(config, paths)
-        identity, known_hosts = validate_ssh_files(config, paths.config)
-        if identity != mounted_secret_path(paths, config.ssh.identity_file) or (
-            known_hosts != mounted_secret_path(paths, config.ssh.known_hosts_file)
-        ):
-            raise StateError("SSH files must resolve below the instance secrets directory")
+        identity, known_hosts = validate_ssh_files(config, paths)
         require_current_phone_configs(config, view.paths)
         if view.generation is None:
             raise StateError("persistent keys are not initialized; run keys generate")

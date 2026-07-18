@@ -43,6 +43,7 @@ mounted read-only; the instance is read-only for `doctor` and writable for local
 management commands. Both retain their absolute host pathnames, so printed
 paths remain valid after the sandbox exits. Parent directories are
 namespace-only scaffolding; sibling host content is not exposed.
+
 The outer launcher allowlists public operator commands. Runtime-only entry
 points cannot be dispatched into this sandbox because their fixed mount paths
 exist only in the long-running service sandbox.
@@ -133,6 +134,7 @@ Permanent validation failures stop immediately. Classified transient failures
 publish `retrying` and exit with status 75; systemd alone retries that status
 within fixed limits. The host waits through these attempts instead of treating
 the first temporary failure as final.
+
 Shutdown attempts every independent cleanup step. Destroying the private
 namespace is the final cleanup boundary, so host routing and firewall state are
 never involved.

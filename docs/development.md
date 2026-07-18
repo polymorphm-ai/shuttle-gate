@@ -98,6 +98,8 @@ final boundary.
 - Keep immutable application and mutable instance roots separate and
   non-overlapping in every API. Derive unit, runtime, locks, and state identity
   only from the canonical instance path.
+- Pass `InstancePaths` through helpers that consume instance files. Never embed
+  service-only mount paths in code callable from an operator sandbox.
 - Test IPv4 and IPv6, printable unusual paths, control-character rejection,
   concurrent instances, socket conflicts, failure rollback, permissions, stale
   state, redaction, retries, and postcondition verification.

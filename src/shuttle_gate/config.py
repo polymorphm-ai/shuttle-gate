@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import errno
+import os
 import re
+import stat
 from enum import StrEnum
 from ipaddress import (
     IPv4Address,
@@ -345,20 +348,48 @@ def effective_routes(config: ProjectConfig) -> tuple[IPNetwork, ...]:
     return tuple(routes)
 
 
-def load_config(path: Path) -> ProjectConfig:
-    """Load one bounded YAML document and return an immutable model."""
+def load_config(path: Path, *, private: bool = True) -> ProjectConfig:
+    """Safely load one bounded YAML document and return an immutable model."""
 
+    descriptor = -1
     try:
-        size = path.stat().st_size
-        if size > MAX_CONFIG_BYTES:
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK,
+        )
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
+            raise ConfigurationError(f"configuration must be a regular non-symlink file: {path}")
+        if private and stat.S_IMODE(info.st_mode) & 0o077:
             raise ConfigurationError(
-                f"configuration is {size} bytes; maximum is {MAX_CONFIG_BYTES}"
+                f"configuration permissions must not allow group or other access: {path}"
             )
-        raw = path.read_text(encoding="utf-8")
+        if info.st_size > MAX_CONFIG_BYTES:
+            raise ConfigurationError(
+                f"configuration is {info.st_size} bytes; maximum is {MAX_CONFIG_BYTES}"
+            )
+        stream = os.fdopen(descriptor, "rb")
+        descriptor = -1
+        with stream:
+            encoded = stream.read(MAX_CONFIG_BYTES + 1)
+        if len(encoded) > MAX_CONFIG_BYTES:
+            raise ConfigurationError(
+                f"configuration exceeds the maximum of {MAX_CONFIG_BYTES} bytes"
+            )
+        raw = encoded.decode("utf-8")
     except FileNotFoundError as exc:
         raise ConfigurationError(f"configuration file does not exist: {path}") from exc
+    except ConfigurationError:
+        raise
     except (OSError, UnicodeError) as exc:
+        if isinstance(exc, OSError) and exc.errno == errno.ELOOP:
+            raise ConfigurationError(
+                f"configuration must be a regular non-symlink file: {path}"
+            ) from exc
         raise ConfigurationError(f"cannot read configuration {path}: {exc}") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
 
     try:
         value: Any = yaml.safe_load(raw)

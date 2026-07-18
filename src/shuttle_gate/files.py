@@ -124,32 +124,35 @@ def require_regular_file(path: Path, label: str) -> None:
         raise ConfigurationError(f"{label} must be a regular non-symlink file: {path}")
 
 
-def validate_ssh_files(config: ProjectConfig, config_path: Path) -> tuple[Path, Path]:
-    """Resolve and validate SSH identity and known-host files."""
-
-    identity = resolve_config_path(config_path, config.ssh.identity_file)
-    known_hosts = resolve_config_path(config_path, config.ssh.known_hosts_file)
-    require_private_file(identity, "SSH identity")
-    require_regular_file(known_hosts, "SSH known-hosts file")
-    return identity, known_hosts
-
-
-def sandbox_secret_path(configured: Path) -> Path:
-    """Map an instance-local ``secrets/`` path into the sandbox mount."""
+def secret_relative_path(configured: Path) -> Path:
+    """Validate and remove the leading ``secrets/`` instance component."""
 
     if configured.is_absolute():
         raise ConfigurationError("SSH files must use instance-relative secrets/ paths")
     parts = configured.parts
     if len(parts) < 2 or parts[0] != "secrets" or ".." in parts:
         raise ConfigurationError("SSH files must be located below the instance secrets/ directory")
-    return Path("/secrets").joinpath(*parts[1:])
+    return Path(*parts[1:])
 
 
 def mounted_secret_path(paths: InstancePaths, configured: Path) -> Path:
     """Resolve a validated configured secret against this execution environment."""
 
-    relative = sandbox_secret_path(configured).relative_to("/secrets")
-    return paths.secrets / relative
+    return paths.secrets / secret_relative_path(configured)
+
+
+def validate_ssh_files(config: ProjectConfig, paths: InstancePaths) -> tuple[Path, Path]:
+    """Validate SSH files and require confinement below instance secrets."""
+
+    identity = resolve_config_path(paths.config, config.ssh.identity_file)
+    known_hosts = resolve_config_path(paths.config, config.ssh.known_hosts_file)
+    expected_identity = mounted_secret_path(paths, config.ssh.identity_file)
+    expected_known_hosts = mounted_secret_path(paths, config.ssh.known_hosts_file)
+    if identity != expected_identity or known_hosts != expected_known_hosts:
+        raise ConfigurationError("SSH files must resolve below the instance secrets directory")
+    require_private_file(identity, "SSH identity")
+    require_regular_file(known_hosts, "SSH known-hosts file")
+    return identity, known_hosts
 
 
 def resolve_export_path(paths: InstancePaths, requested: Path) -> Path:

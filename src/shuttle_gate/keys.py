@@ -652,7 +652,7 @@ def _ssh_operation_completed(
     try:
         identity_value = identity.relative_to(paths.root).as_posix()
     except ValueError as exc:
-        raise StateError(f"SSH identity is outside the project: {identity}") from exc
+        raise StateError(f"SSH identity is outside the instance: {identity}") from exc
     expected = {
         "schema_version": SSH_TRANSACTION_SCHEMA_VERSION,
         "operation_id": operation_id,
@@ -691,7 +691,7 @@ def _record_ssh_operation(
     try:
         identity_value = identity.relative_to(paths.root).as_posix()
     except ValueError as exc:
-        raise StateError(f"SSH identity is outside the project: {identity}") from exc
+        raise StateError(f"SSH identity is outside the instance: {identity}") from exc
     atomic_write_json(
         _ssh_operation_path(paths, operation_id),
         {
@@ -707,7 +707,7 @@ def _record_ssh_operation(
 
 
 def recover_ssh_key_transaction(config: ProjectConfig, paths: InstancePaths) -> None:
-    """Finish an interrupted SSH-key replacement while holding the project lock."""
+    """Finish an interrupted SSH-key replacement while holding the instance lock."""
 
     identity, public = _ssh_key_paths(config, paths)
     transaction = _read_ssh_transaction(identity)

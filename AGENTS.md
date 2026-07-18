@@ -47,10 +47,10 @@ confine runtime effects to the rootless namespace. Mount configuration, secrets,
 and state with minimum access. Never let the toolkit modify the SSH server; it
 may only print manual key-setup instructions. Keep host-facing paths valid
 outside the sandbox; explicit phone-config copies belong only below the ignored
-`exports/` directory. Keep application roots read-only, derive runtime identity
-from canonical instance paths, and fail closed on duplicate host UDP tuples.
-Application and instance roots must always be separate and non-overlapping;
-never write persistent data beside application code.
+`exports/` directory. Keep immutable application roots read-only and separate
+from mutable instances. Pass `InstancePaths` explicitly across sandbox contexts;
+never use service-only mount paths in operator code. Derive runtime identity
+from canonical instance paths and fail closed on duplicate host UDP tuples.
 
 Use short Conventional Commit subjects. Pull requests must describe behavior
 and security impact, list tests run, and separate unrelated refactors.

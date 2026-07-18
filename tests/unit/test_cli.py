@@ -18,9 +18,14 @@ from .fakes import FakeRunner
 RUNNER = CliRunner()
 
 
-def _select_root(monkeypatch: pytest.MonkeyPatch, root: Path) -> None:
-    monkeypatch.setenv("SHUTTLE_GATE_ROOT", str(root))
-    monkeypatch.setenv("SHUTTLE_GATE_APPLICATION_ROOT", str(root))
+def _select_roots(
+    monkeypatch: pytest.MonkeyPatch,
+    instance_root: Path,
+    application_root: Path | None = None,
+) -> None:
+    application = application_root or instance_root.with_name(f".{instance_root.name}-application")
+    monkeypatch.setenv("SHUTTLE_GATE_ROOT", str(instance_root))
+    monkeypatch.setenv("SHUTTLE_GATE_APPLICATION_ROOT", str(application))
 
 
 def _fake_commands(monkeypatch: pytest.MonkeyPatch, fake: FakeRunner) -> None:
@@ -43,8 +48,12 @@ def test_init_creates_private_local_layout_and_refuses_overwrite(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _select_root(monkeypatch, tmp_path)
-    (tmp_path / "config.example.yaml").write_text(
+    application = tmp_path / "application"
+    instance = tmp_path / "instance"
+    application.mkdir()
+    instance.mkdir()
+    _select_roots(monkeypatch, instance, application)
+    (application / "config.example.yaml").write_text(
         yaml.safe_dump(config_data()),
         encoding="utf-8",
     )
@@ -52,8 +61,8 @@ def test_init_creates_private_local_layout_and_refuses_overwrite(
     result = RUNNER.invoke(cli.app, ["init"])
 
     assert result.exit_code == 0
-    assert (tmp_path / "config.yaml").stat().st_mode & 0o777 == 0o600
-    assert (tmp_path / "secrets").stat().st_mode & 0o777 == 0o700
+    assert (instance / "config.yaml").stat().st_mode & 0o777 == 0o600
+    assert (instance / "secrets").stat().st_mode & 0o777 == 0o700
     repeated = RUNNER.invoke(cli.app, ["init"])
     assert repeated.exit_code == 2
     assert "refusing to overwrite" in repeated.output
@@ -92,7 +101,7 @@ def test_config_keys_peers_and_phone_workflow(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    _select_root(monkeypatch, instance.root)
+    _select_roots(monkeypatch, instance.root)
     fake = FakeRunner()
     _fake_commands(monkeypatch, fake)
 
@@ -128,7 +137,7 @@ def test_rotation_and_pruning_commands(
     instance: InstancePaths,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _select_root(monkeypatch, instance.root)
+    _select_roots(monkeypatch, instance.root)
     fake = FakeRunner()
     _fake_commands(monkeypatch, fake)
     assert RUNNER.invoke(cli.app, ["keys", "generate"]).exit_code == 0
@@ -145,7 +154,7 @@ def test_ssh_key_commands_only_generate_locally_and_print_manual_steps(
     instance: InstancePaths,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _select_root(monkeypatch, instance.root)
+    _select_roots(monkeypatch, instance.root)
     fake = FakeRunner()
     _fake_commands(monkeypatch, fake)
     (instance.secrets / "id_ed25519").unlink()
@@ -162,7 +171,7 @@ def test_doctor_runtime_health_status_and_version_adapters(
     instance: InstancePaths,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _select_root(monkeypatch, instance.root)
+    _select_roots(monkeypatch, instance.root)
     monkeypatch.setattr(
         cli,
         "doctor_checks",

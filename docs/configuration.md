@@ -15,6 +15,11 @@ therefore select the same instance. Without `--instance`, the directory is
 before the command to select an existing alternative. Application and instance
 directories must be separate and non-overlapping.
 
+The operational `config.yaml` must be a regular, non-symlink file whose mode
+does not grant group or other access (normally `0600`). Every command applies
+this check before parsing it. The public `config.example.yaml` is only a
+template and is not used as an operational configuration.
+
 ## `wireguard`
 
 - `bind_addresses`: exact unicast addresses already present on the laptop.
@@ -47,7 +52,9 @@ Removing a YAML peer does not immediately remove secret state. Review and run:
 Authentication is batch-only and public-key-only, with `IdentitiesOnly=yes` and
 strict host-key checking. Interactive password mechanisms are disabled.
 Secret paths may contain unusual printable filename characters, but control
-characters are rejected so commands and diagnostics remain unambiguous.
+characters are rejected so commands and diagnostics remain unambiguous. Path
+resolution must remain below the selected instance's `secrets/` directory;
+symbolic-link escapes are rejected.
 
 ## `routing`
 
