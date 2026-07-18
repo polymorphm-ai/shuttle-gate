@@ -22,6 +22,14 @@ def test_endpoint_formats_ipv6_literal() -> None:
     assert endpoint(config) == "[2001:db8::10]:51820"
 
 
+def test_endpoint_preserves_ipv6_client_scope() -> None:
+    data = config_data()
+    data["wireguard"]["endpoint_host"] = "fe80::10%wlan0"
+    config = ProjectConfig.model_validate(data)
+
+    assert endpoint(config) == "[fe80::10%wlan0]:51820"
+
+
 def test_phone_config_contains_direct_upstream_dns_and_no_server_private_key(
     config: ProjectConfig,
 ) -> None:

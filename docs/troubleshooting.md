@@ -105,6 +105,10 @@ gateway and peer addresses, an IPv6 route, and reachability from the SSH server
 to the target. Pasta receives an explicit IPv6 UDP forward. No IPv4 fallback is
 performed for IPv6 destinations.
 
+An IPv6 link-local bind requires `%HOST_INTERFACE`. A link-local
+`endpoint_host` separately requires the interface scope used by the client;
+using the laptop's interface name there is normally wrong for a phone.
+
 ## State or shutdown was interrupted
 
 Run `./shuttle-gate down`, then repeat the operation. Namespace destruction

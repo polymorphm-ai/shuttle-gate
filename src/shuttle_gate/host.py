@@ -19,11 +19,12 @@ import zipfile
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
+from ipaddress import IPv6Address
 from pathlib import Path
 from typing import Any, NoReturn
 
 from . import __version__
-from .config import ProjectConfig, load_config
+from .config import IPAddress, ProjectConfig, load_config
 from .errors import ShuttleGateError, StateError
 from .files import InstancePaths, atomic_write_bytes, ensure_private_directory, fsync_directory
 from .launch import prepare_launch, validate_launch_manifest
@@ -741,16 +742,32 @@ def _check_host_bindings(config: ProjectConfig) -> None:
     result = _run([_command("ip"), "-json", "address", "show"], capture=True, check=True)
     try:
         links = json.loads(result.stdout)
-        assigned = {
-            item["local"]
-            for link in links
-            for item in link.get("addr_info", [])
-            if isinstance(item, dict) and isinstance(item.get("local"), str)
-        }
-    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        if not isinstance(links, list):
+            raise TypeError
+        assigned: set[str] = set()
+        assigned_scoped: set[tuple[str, str]] = set()
+        for link in links:
+            if not isinstance(link, dict):
+                raise TypeError
+            interface = link.get("ifname")
+            addresses = link.get("addr_info", [])
+            if not isinstance(addresses, list):
+                raise TypeError
+            for item in addresses:
+                if not isinstance(item, dict):
+                    raise TypeError
+                local = item.get("local")
+                if not isinstance(local, str):
+                    continue
+                assigned.add(local)
+                if isinstance(interface, str):
+                    assigned_scoped.add((local, interface))
+    except (json.JSONDecodeError, TypeError) as exc:
         raise HostError("cannot parse host interface addresses") from exc
     missing = [
-        str(address) for address in config.wireguard.bind_addresses if str(address) not in assigned
+        str(address)
+        for address in config.wireguard.bind_addresses
+        if not _host_binding_is_assigned(address, assigned, assigned_scoped)
     ]
     if missing:
         raise HostError(
@@ -770,6 +787,41 @@ def _check_host_bindings(config: ProjectConfig) -> None:
         )
 
 
+def _bind_address_parts(address: IPAddress) -> tuple[str, str | None]:
+    """Return the kernel address and optional interface scope for one bind."""
+
+    if isinstance(address, IPv6Address):
+        return str(IPv6Address(int(address))), address.scope_id
+    return str(address), None
+
+
+def _host_binding_is_assigned(
+    address: IPAddress,
+    assigned: set[str],
+    assigned_scoped: set[tuple[str, str]],
+) -> bool:
+    host, scope = _bind_address_parts(address)
+    if scope is None:
+        return host in assigned
+    return (host, scope) in assigned_scoped
+
+
+def _socket_bind_target(
+    address: IPAddress,
+    port: int,
+) -> tuple[str, int] | tuple[str, int, int, int]:
+    """Build a Python socket target with a numeric IPv6 scope ID."""
+
+    host, scope = _bind_address_parts(address)
+    if not isinstance(address, IPv6Address):
+        return host, port
+    try:
+        scope_id = socket.if_nametoindex(scope) if scope is not None else 0
+    except OSError as exc:
+        raise HostError(f"configured bind interface is unavailable: {scope}") from exc
+    return host, port, 0, scope_id
+
+
 def _check_host_socket_availability(config: ProjectConfig) -> None:
     """Probe every exact UDP tuple without permitting address reuse."""
 
@@ -782,7 +834,7 @@ def _check_host_socket_availability(config: ProjectConfig) -> None:
             if family == socket.AF_INET6:
                 listener.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
             try:
-                listener.bind((str(address), config.wireguard.listen_port))
+                listener.bind(_socket_bind_target(address, config.wireguard.listen_port))
             except OSError as exc:
                 raise HostError(
                     f"configured host UDP socket is unavailable: {address}/{config.wireguard.listen_port}"

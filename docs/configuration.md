@@ -24,9 +24,12 @@ template and is not used as an operational configuration.
 
 - `bind_addresses`: exact unicast addresses already present on the laptop.
   Wildcards and multicast are rejected. Each address becomes one explicit pasta
-  UDP forward.
+  UDP forward. An IPv6 link-local bind must use `ADDRESS%HOST_INTERFACE`; scopes
+  are rejected on other addresses.
 - `endpoint_host`: laptop address or DNS name placed in phone configurations.
-  IPv6 literals are bracketed automatically.
+  IPv6 literals are bracketed automatically. A link-local endpoint requires an
+  explicit client-side `%INTERFACE` scope, which may differ from the host bind
+  interface; prefer IPv4, global IPv6, or DNS for portable multi-client configs.
 - `listen_port`: UDP port, default `51820`. It must be at or above the host's
   unprivileged-port threshold.
 - `gateway_addresses`: at most one IPv4 and one IPv6 interface address, such as
@@ -43,7 +46,8 @@ Removing a YAML peer does not immediately remove secret state. Review and run:
 
 ## `ssh`
 
-- `host`, `user`, and `port`: SSH destination.
+- `host`, `user`, and `port`: SSH destination. A link-local IPv6 host requires
+  the laptop-side `%INTERFACE` scope.
 - `identity_file`: instance-relative private key below `secrets/`.
 - `known_hosts_file`: instance-relative verified host-key file below `secrets/`.
 - `remote_python`: safe executable name or absolute path, without arguments.

@@ -194,6 +194,46 @@ def test_accepts_unambiguous_remote_python(remote_python: str) -> None:
     assert ProjectConfig.model_validate(data).ssh.remote_python == remote_python
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("bind_addresses", ["127.0.0.1", "fe80::1"], "%INTERFACE"),
+        ("bind_addresses", ["127.0.0.1", "2001:db8::1%eth0"], "only"),
+        (
+            "bind_addresses",
+            ["127.0.0.1", "fe80::1%0123456789abcdef"],
+            "safe Linux interface",
+        ),
+        ("endpoint_host", "fe80::1", "%INTERFACE"),
+        ("endpoint_host", "2001:db8::1%wlan0", "only"),
+        ("endpoint_host", "fe80::1%0123456789abcdef", "safe interface"),
+    ],
+)
+def test_ipv6_scopes_are_explicit_and_link_local_only(
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    data = config_data()
+    data["wireguard"][field] = value
+
+    with pytest.raises(ValueError, match=message):
+        ProjectConfig.model_validate(data)
+
+
+def test_accepts_scoped_link_local_bind_endpoint_and_ssh_host() -> None:
+    data = config_data()
+    data["wireguard"]["bind_addresses"] = ["127.0.0.1", "fe80::1%eth0"]
+    data["wireguard"]["endpoint_host"] = "fe80::2%wlan0"
+    data["ssh"]["host"] = "fe80::3%enp0s1"
+
+    config = ProjectConfig.model_validate(data)
+
+    assert str(config.wireguard.bind_addresses[1]) == "fe80::1%eth0"
+    assert config.wireguard.endpoint_host == "fe80::2%wlan0"
+    assert config.ssh.host == "fe80::3%enp0s1"
+
+
 def test_rejects_duplicate_peer_name_missing_family_and_non_unicast_endpoints() -> None:
     duplicate = config_data()
     duplicate["wireguard"]["peers"][1]["name"] = "phone"

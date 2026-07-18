@@ -32,6 +32,7 @@ USER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,63}$")
 PYTHON_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.+-]{0,254}$")
 PYTHON_PATH_PATTERN = re.compile(r"^/[A-Za-z0-9_./+-]{1,254}$")
 HOST_LABEL_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
+INTERFACE_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,15}$")
 MULTICAST_NETWORKS = (ip_network("224.0.0.0/4"), ip_network("ff00::/8"))
 
 IPAddress = IPv4Address | IPv6Address
@@ -85,6 +86,22 @@ class WireGuardConfig(StrictModel):
     mtu: int = Field(default=1420, ge=1280, le=9000)
     peers: tuple[PeerConfig, ...]
 
+    @field_validator("bind_addresses")
+    @classmethod
+    def validate_bind_scopes(cls, values: tuple[IPAddress, ...]) -> tuple[IPAddress, ...]:
+        for address in values:
+            if not isinstance(address, IPv6Address):
+                continue
+            scope = address.scope_id
+            if address.is_link_local and scope is None:
+                raise ValueError("IPv6 link-local bind addresses require a %INTERFACE scope")
+            if scope is not None:
+                if not address.is_link_local:
+                    raise ValueError("an interface scope is valid only for IPv6 link-local binds")
+                if INTERFACE_PATTERN.fullmatch(scope) is None:
+                    raise ValueError("IPv6 bind scope must be a safe Linux interface name")
+        return values
+
     @field_validator("endpoint_host")
     @classmethod
     def validate_endpoint_host(cls, value: str) -> str:
@@ -100,6 +117,17 @@ class WireGuardConfig(StrictModel):
             return host
         if address.is_unspecified or address.is_multicast:
             raise ValueError("must be an explicit unicast address")
+        if isinstance(address, IPv6Address):
+            scope = address.scope_id
+            if address.is_link_local and scope is None:
+                raise ValueError("IPv6 link-local addresses require a %INTERFACE scope")
+            if scope is not None:
+                if not address.is_link_local:
+                    raise ValueError(
+                        "an interface scope is valid only for IPv6 link-local addresses"
+                    )
+                if INTERFACE_PATTERN.fullmatch(scope) is None:
+                    raise ValueError("IPv6 scope must be a safe interface name")
         return host
 
     @model_validator(mode="after")

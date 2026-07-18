@@ -9,7 +9,7 @@ import socket
 import subprocess
 from contextlib import nullcontext
 from dataclasses import replace
-from ipaddress import IPv4Address
+from ipaddress import IPv4Address, IPv6Address
 from pathlib import Path
 from typing import Any
 
@@ -300,6 +300,11 @@ def test_namespace_commands_have_fixed_boundaries_and_exposure(
     assert pasta[pasta.index("--dns") + 1] == "none"
     assert pasta[pasta.index("--search") + 1] == "none"
     assert pasta[pasta.index("--") + 1 :] == gateway
+    scoped_wireguard = config.wireguard.model_copy(
+        update={"bind_addresses": (IPv6Address("fe80::1%eth0"),)}
+    )
+    scoped_config = config.model_copy(update={"wireguard": scoped_wireguard})
+    assert "fe80::1%eth0/51820" in host.pasta_command(gateway, scoped_config)
     no_ports = host.pasta_command(["inner"])
     assert no_ports[no_ports.index("--udp-ports") + 1] == "none"
     with pytest.raises(ValueError, match="empty"):
@@ -478,10 +483,11 @@ def test_host_binding_validation_checks_addresses_and_port(
         json.dumps(
             [
                 {
+                    "ifname": "lo",
                     "addr_info": [
                         {"local": "127.0.0.1"},
                         {"local": "::1"},
-                    ]
+                    ],
                 }
             ]
         ),
@@ -496,6 +502,71 @@ def test_host_binding_validation_checks_addresses_and_port(
     monkeypatch.setattr(host, "_run", lambda *_args, **_kwargs: missing)
     with pytest.raises(HostError, match="not assigned"):
         host._check_host_bindings(config)
+
+
+def test_host_binding_validation_matches_ipv6_scope_to_exact_interface(
+    config: ProjectConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _commands(monkeypatch)
+    completed = subprocess.CompletedProcess(
+        ["ip"],
+        0,
+        json.dumps(
+            [
+                {
+                    "ifname": "eth0",
+                    "addr_info": [{"local": "fe80::1"}],
+                }
+            ]
+        ),
+        "",
+    )
+    monkeypatch.setattr(host, "_run", lambda *_args, **_kwargs: completed)
+    monkeypatch.setattr(Path, "read_text", lambda *_args, **_kwargs: "1024\n")
+
+    wireguard = config.wireguard.model_copy(
+        update={"bind_addresses": (IPv6Address("fe80::1%eth0"),)}
+    )
+    selected = config.model_copy(update={"wireguard": wireguard})
+    host._check_host_bindings(selected)
+
+    wrong_wireguard = wireguard.model_copy(
+        update={"bind_addresses": (IPv6Address("fe80::1%eth1"),)}
+    )
+    wrong = config.model_copy(update={"wireguard": wrong_wireguard})
+    with pytest.raises(HostError, match=r"fe80::1%eth1"):
+        host._check_host_bindings(wrong)
+
+
+def test_socket_bind_target_uses_numeric_ipv6_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(socket, "if_nametoindex", lambda interface: 7 if interface == "eth0" else 0)
+
+    assert host._socket_bind_target(IPv4Address("127.0.0.1"), 51820) == (
+        "127.0.0.1",
+        51820,
+    )
+    assert host._socket_bind_target(IPv6Address("::1"), 51820) == ("::1", 51820, 0, 0)
+    assert host._socket_bind_target(IPv6Address("fe80::1%eth0"), 51820) == (
+        "fe80::1",
+        51820,
+        0,
+        7,
+    )
+
+
+def test_socket_bind_target_rejects_an_unavailable_interface(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unavailable(_interface: str) -> int:
+        raise OSError("no such interface")
+
+    monkeypatch.setattr(socket, "if_nametoindex", unavailable)
+
+    with pytest.raises(HostError, match="configured bind interface is unavailable: missing0"):
+        host._socket_bind_target(IPv6Address("fe80::1%missing0"), 51820)
 
 
 def test_host_udp_socket_probe_detects_an_existing_listener(config: ProjectConfig) -> None:
