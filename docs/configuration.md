@@ -110,6 +110,7 @@ It supports TCP, unicast UDP, DNS, IPv4, and IPv6 with native nftables. Unknown
 backend values are rejected.
 
 After a route, endpoint, DNS, peer, or key change, regenerate and re-import phone
-configurations. Startup rejects stale fingerprints. Run `down` before persistent
-state changes. If a key operation is interrupted, retry with its printed
-`--operation-id`; use a fresh ID for a new intentional operation.
+configurations. Startup rejects missing, modified, or stale generated configs
+and their fingerprints. Run `down` before persistent state changes. If a key
+operation is interrupted, retry with its printed `--operation-id`; use a fresh
+ID for a new intentional operation.

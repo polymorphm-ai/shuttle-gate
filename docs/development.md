@@ -100,6 +100,8 @@ final boundary.
   only from the canonical instance path.
 - Pass `InstancePaths` through helpers that consume instance files. Never embed
   service-only mount paths in code callable from an operator sandbox.
+- Treat command selection as an effect boundary: a `NAME` operation may update
+  only that named peer unless the command explicitly declares a global effect.
 - Test IPv4 and IPv6, printable unusual paths, control-character rejection,
   concurrent instances, socket conflicts, failure rollback, permissions, stale
   state, redaction, retries, and postcondition verification.

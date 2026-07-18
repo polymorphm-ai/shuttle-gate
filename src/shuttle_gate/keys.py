@@ -108,9 +108,9 @@ def _generate_missing_keys(
     config: ProjectConfig,
     paths: InstancePaths,
     runner: Runner,
-    peer_name: str | None = None,
+    selected: tuple[PeerConfig, ...],
 ) -> list[str]:
-    """Create missing server and declared peer keys without overwriting state."""
+    """Create missing server and selected peer keys without overwriting state."""
 
     ensure_private_directory(paths.state)
     created: list[str] = []
@@ -123,7 +123,6 @@ def _generate_missing_keys(
         atomic_write(paths.server_dir() / PUBLIC_KEY, pair.public + "\n", 0o644)
         created.append("server")
 
-    selected = _selected_peers(config, peer_name)
     for peer in selected:
         directory = paths.peer_dir(peer.name)
         status = _peer_key_status(directory)
@@ -137,7 +136,8 @@ def _generate_missing_keys(
             atomic_write(directory / PRESHARED_KEY, preshared + "\n", 0o600)
             created.append(peer.name)
 
-    _render_phone_configs(config, paths, config.wireguard.peers)
+    _validate_selected_keys(paths, selected)
+    _render_phone_configs(config, paths, selected)
     return created
 
 
@@ -147,12 +147,14 @@ def generate_missing_keys(
     runner: Runner,
     peer_name: str | None = None,
 ) -> list[str]:
-    """Generate and atomically publish one complete key/config snapshot."""
+    """Generate selected missing keys and refresh only their phone configs."""
+
+    selected = _selected_peers(config, peer_name)
 
     return mutate_state(
         paths,
-        lambda snapshot: _generate_missing_keys(config, snapshot, runner, peer_name),
-        lambda snapshot: _validate_snapshot(config, snapshot),
+        lambda snapshot: _generate_missing_keys(config, snapshot, runner, selected),
+        lambda snapshot: _validate_phone_snapshot(config, snapshot, selected),
     )
 
 
@@ -314,10 +316,16 @@ def require_current_phone_configs(config: ProjectConfig, paths: InstancePaths) -
 
 
 def _validate_snapshot(config: ProjectConfig, paths: InstancePaths) -> None:
-    _load_server_keys(paths)
-    for peer in config.wireguard.peers:
-        _load_peer_keys(paths, peer.name)
+    _validate_selected_keys(paths, config.wireguard.peers)
     _require_current_phone_configs(config, paths)
+
+
+def _validate_selected_keys(paths: InstancePaths, selected: tuple[PeerConfig, ...]) -> None:
+    """Validate the server and exactly the selected peer keys."""
+
+    _load_server_keys(paths)
+    for peer in selected:
+        _load_peer_keys(paths, peer.name)
 
 
 def _validate_phone_snapshot(
@@ -325,11 +333,9 @@ def _validate_phone_snapshot(
     paths: InstancePaths,
     selected: tuple[PeerConfig, ...],
 ) -> None:
-    """Validate all keys and only the phone configs this operation changed."""
+    """Validate exactly the keys and phone configs this operation selected."""
 
-    _load_server_keys(paths)
-    for peer in config.wireguard.peers:
-        _load_peer_keys(paths, peer.name)
+    _validate_selected_keys(paths, selected)
     _require_selected_phone_configs(config, paths, selected)
 
 
@@ -340,22 +346,24 @@ def rotate_peer(
     name: str,
     operation_id: str,
 ) -> None:
-    """Replace one peer in a complete atomically published generation."""
+    """Replace one peer in an atomically published generation."""
+
+    selected = _selected_peers(config, name)
 
     def rotate(snapshot: InstancePaths) -> None:
-        peer = _selected_peers(config, name)[0]
+        peer = selected[0]
         pair = _generate_key_pair(runner)
         preshared = _generate_preshared_key(runner)
         directory = snapshot.peer_dir(peer.name)
         atomic_write(directory / PUBLIC_KEY, pair.public + "\n", 0o644)
         atomic_write(directory / PRESHARED_KEY, preshared + "\n", 0o600)
         atomic_write(directory / PRIVATE_KEY, pair.private + "\n", 0o600)
-        _render_phone_configs(config, snapshot, config.wireguard.peers)
+        _render_phone_configs(config, snapshot, selected)
 
     mutate_state(
         paths,
         rotate,
-        lambda snapshot: _validate_snapshot(config, snapshot),
+        lambda snapshot: _validate_phone_snapshot(config, snapshot, selected),
         operation=void_operation(operation_id, f"keys.rotate-peer.{name}"),
     )
 
@@ -403,9 +411,22 @@ def prune_orphaned_peers(config: ProjectConfig, paths: InstancePaths) -> list[st
     return mutate_state(
         paths,
         prune,
-        lambda snapshot: _validate_snapshot(config, snapshot),
+        lambda snapshot: _validate_available_keys(config, snapshot),
         publish_if=bool,
     )
+
+
+def _validate_available_keys(config: ProjectConfig, paths: InstancePaths) -> None:
+    """Validate the server and each provisioned declared peer without requiring all peers."""
+
+    _load_server_keys(paths)
+    for peer in config.wireguard.peers:
+        status = _peer_key_status(paths.peer_dir(peer.name))
+        if status == "missing":
+            continue
+        if status == "partial":
+            raise StateError(f"peer {peer.name} key state is partial; rotate it explicitly")
+        _load_peer_keys(paths, peer.name)
 
 
 def generate_ssh_key(
@@ -872,9 +893,17 @@ def _peer_rows(config: ProjectConfig, paths: InstancePaths) -> tuple[tuple[str, 
     rows: list[tuple[str, str, str]] = []
     for peer in config.wireguard.peers:
         key_state = _peer_key_status(paths.peer_dir(peer.name))
-        phone_state = (
-            "present" if (paths.peer_dir(peer.name) / PHONE_CONFIG).is_file() else "missing"
-        )
+        phone = paths.peer_dir(peer.name) / PHONE_CONFIG
+        fingerprint = paths.peer_dir(peer.name) / FINGERPRINT
+        if not phone.is_file() or not fingerprint.is_file():
+            phone_state = "missing"
+        else:
+            try:
+                _require_selected_phone_configs(config, paths, (peer,))
+            except StateError:
+                phone_state = "stale"
+            else:
+                phone_state = "current"
         rows.append((peer.name, key_state, phone_state))
     return tuple(rows)
 

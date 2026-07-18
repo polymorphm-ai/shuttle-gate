@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shlex
 import shutil
+from collections.abc import Iterable
 from pathlib import Path
 
 import pytest
@@ -29,6 +30,13 @@ from shuttle_gate.keys import (
 from .fakes import FakeRunner
 
 
+def _peer_state(
+    rows: Iterable[tuple[str, str, str]],
+    name: str,
+) -> tuple[str, str]:
+    return next((keys, phone) for peer, keys, phone in rows if peer == name)
+
+
 def test_generate_missing_keys_creates_server_peers_and_phone_configs(
     config: ProjectConfig, instance: InstancePaths
 ) -> None:
@@ -54,6 +62,18 @@ def test_generation_is_idempotent_and_detects_partial_state(
     (instance.peer_dir("phone") / "preshared.key").unlink()
     with pytest.raises(StateError, match="partial"):
         generate_missing_keys(config, instance, runner)
+
+
+def test_selected_generation_provisions_only_the_named_peer(
+    config: ProjectConfig,
+    instance: InstancePaths,
+) -> None:
+    runner = FakeRunner()
+
+    assert generate_missing_keys(config, instance, runner, "tablet") == ["server", "tablet"]
+
+    assert _peer_state(peer_rows(config, instance), "phone") == ("missing", "missing")
+    assert _peer_state(peer_rows(config, instance), "tablet") == ("complete", "current")
 
 
 def test_legacy_key_layout_is_migrated_without_regeneration(
@@ -124,6 +144,22 @@ def test_peer_and_server_rotation_replace_public_material(
     assert (instance.server_dir() / "public.key").read_text() != server_before
 
 
+def test_peer_rotation_changes_only_the_named_peer(
+    config: ProjectConfig,
+    instance: InstancePaths,
+) -> None:
+    runner = FakeRunner()
+    generate_missing_keys(config, instance, runner)
+    tablet_public = (instance.peer_dir("tablet") / "public.key").read_text(encoding="ascii")
+    (instance.peer_dir("tablet") / PHONE_CONFIG).unlink()
+
+    rotate_peer(config, instance, runner, "phone", "rotate-only-phone")
+
+    assert (instance.peer_dir("tablet") / "public.key").read_text(encoding="ascii") == tablet_public
+    assert not (instance.peer_dir("tablet") / PHONE_CONFIG).exists()
+    assert _peer_state(peer_rows(config, instance), "phone") == ("complete", "current")
+
+
 def test_rotation_operation_id_prevents_duplicate_key_changes(
     config: ProjectConfig, instance: InstancePaths
 ) -> None:
@@ -152,6 +188,19 @@ def test_prune_removes_only_undeclared_directories(
     assert prune_orphaned_peers(config, instance) == ["old-phone"]
     assert instance.peer_dir("phone").is_dir()
     assert not orphan.exists()
+
+
+def test_prune_works_with_partially_provisioned_declared_peers(
+    config: ProjectConfig,
+    instance: InstancePaths,
+) -> None:
+    generate_missing_keys(config, instance, FakeRunner(), "phone")
+    orphan = instance.peer_dir("old-phone")
+    orphan.mkdir(mode=0o700)
+
+    assert prune_orphaned_peers(config, instance) == ["old-phone"]
+    assert _peer_state(peer_rows(config, instance), "phone") == ("complete", "current")
+    assert _peer_state(peer_rows(config, instance), "tablet") == ("missing", "missing")
 
 
 def test_generate_ssh_key_and_print_only_manual_instruction(
@@ -194,7 +243,10 @@ def test_peer_rows_report_state(config: ProjectConfig, instance: InstancePaths) 
         ("tablet", "missing", "missing"),
     ]
     generate_missing_keys(config, instance, FakeRunner())
-    assert next(iter(peer_rows(config, instance))) == ("phone", "complete", "present")
+    assert next(iter(peer_rows(config, instance))) == ("phone", "complete", "current")
+
+    (instance.peer_dir("phone") / PHONE_CONFIG).write_text("changed\n", encoding="utf-8")
+    assert next(iter(peer_rows(config, instance))) == ("phone", "complete", "stale")
 
 
 def test_generation_rejects_partial_server_and_empty_tool_output(

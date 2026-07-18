@@ -123,14 +123,14 @@ def keys_rotate_peer(
     yes: Annotated[bool, typer.Option("--yes")] = False,
     operation_id: Annotated[str | None, typer.Option("--operation-id")] = None,
 ) -> None:
-    """Replace one peer key and invalidate its old phone config."""
+    """Replace one peer key and regenerate only its phone config."""
 
     require_confirmation(f"rotate keys for peer {name}?", yes)
     request_id = operation_id or uuid.uuid4().hex
     typer.echo(f"operation ID: {request_id}")
     paths = instance_paths()
     rotate_peer(configuration(paths), paths, SubprocessRunner(), name, request_id)
-    typer.echo(f"rotated peer: {name}")
+    typer.echo(f"rotated peer: {name}; re-import its phone config")
 
 
 @keys_app.command("rotate-server")

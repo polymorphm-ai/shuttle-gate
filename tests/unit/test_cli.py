@@ -112,7 +112,7 @@ def test_config_keys_peers_and_phone_workflow(
     assert RUNNER.invoke(cli.app, ["keys", "generate"]).exit_code == 0
 
     peers = RUNNER.invoke(cli.app, ["peers", "list"])
-    assert "phone\tkeys=complete\tphone-config=present" in peers.output
+    assert "phone\tkeys=complete\tphone-config=current" in peers.output
     phone = RUNNER.invoke(cli.app, ["phone-config", "phone", "--stdout"])
     assert phone.exit_code == 0
     assert "[Interface]" in phone.output

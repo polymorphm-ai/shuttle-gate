@@ -76,6 +76,11 @@ An existing dedicated key may instead be placed at its configured path under
 Repeated generation preserves existing keys. Each peer receives separate key
 material and a configuration under `state/current/peers/NAME/`. `current` is an
 atomic pointer to a crash-consistent generation; never edit below it.
+`keys generate --peer NAME` provisions only the server and named peer and
+refreshes only that peer's configuration; without `--peer`, it provisions and
+refreshes every declared peer. `peers list` reports each derived config as
+`current`, `stale`, or `missing`.
+
 `phone-config NAME` regenerates only that peer's derived configuration. Other
 peer files remain unchanged, even if they are missing or stale. Startup checks
 that every declared peer is complete and current.
@@ -93,6 +98,10 @@ If a rotation outcome is unknown, repeat the same operation ID:
 ```console
 ./shuttle-gate keys rotate-peer phone --yes --operation-id ID
 ```
+
+Peer rotation changes and regenerates only the named peer. Re-import that
+peer's new configuration. Server rotation necessarily regenerates every peer
+configuration; re-import all of them.
 
 ## 4. Check and start
 
