@@ -295,6 +295,7 @@ class BackendConfig(StrictModel):
     mode: str = "sshuttle"
     method: str = "nft-tproxy"
     startup_timeout_seconds: int = Field(default=45, ge=5, le=300)
+    verbose: bool = False
 
     @model_validator(mode="after")
     def validate_backend(self) -> BackendConfig:

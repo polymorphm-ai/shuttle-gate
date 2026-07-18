@@ -48,3 +48,4 @@ backend:
   mode: sshuttle
   method: nft-tproxy
   startup_timeout_seconds: 45
+  verbose: false

@@ -91,3 +91,13 @@ def test_fingerprint_changes_for_operator_visible_phone_setting(config: ProjectC
         )
         != first
     )
+
+
+def test_fingerprint_ignores_backend_log_verbosity(config: ProjectConfig) -> None:
+    peer = config.wireguard.peers[0]
+    first = phone_fingerprint(config, peer, "server", "peer", "psk")
+    data = deepcopy(config_data())
+    data["backend"]["verbose"] = True
+    changed = ProjectConfig.model_validate(data)
+
+    assert phone_fingerprint(changed, changed.wireguard.peers[0], "server", "peer", "psk") == first

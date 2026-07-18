@@ -18,6 +18,7 @@ def test_valid_dual_stack_config_is_immutable() -> None:
     config = ProjectConfig.model_validate(config_data())
 
     assert config.project == "test-gate"
+    assert not config.backend.verbose
     assert [address.version for address in config.wireguard.gateway_addresses] == [4, 6]
     with pytest.raises(ValidationError):
         config.project = "changed"

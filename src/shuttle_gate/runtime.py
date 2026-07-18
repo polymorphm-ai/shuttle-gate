@@ -163,8 +163,9 @@ def sshuttle_arguments(
         config.ssh.remote_python,
         "--ssh-cmd",
         shlex.join(ssh_arguments(config, paths)),
-        "--verbose",
     ]
+    if config.backend.verbose:
+        command.append("--verbose")
     for network in MULTICAST_EXCLUSIONS:
         if (":" in network and 6 in families) or (":" not in network and 4 in families):
             command.extend(["--exclude", network])

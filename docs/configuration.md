@@ -109,10 +109,13 @@ backend:
   mode: sshuttle
   method: nft-tproxy
   startup_timeout_seconds: 45
+  verbose: false
 ```
 
 It supports TCP, unicast UDP, DNS, IPv4, and IPv6 with native nftables. Unknown
-backend values are rejected.
+backend values are rejected. `verbose` defaults to `false`; enable it only for
+temporary diagnostics because per-flow logs expose peer and destination
+metadata. Restart the gateway after changing it.
 
 After a route, endpoint, DNS, peer, or key change, regenerate and re-import phone
 configurations. Startup rejects missing, modified, or stale generated configs

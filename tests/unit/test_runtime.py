@@ -147,11 +147,22 @@ def test_sshuttle_command_uses_native_method_shim_and_route_exclusions(
     assert "--tmark 0x1" in rendered
     assert "--ns-hosts" not in command
     assert "--to-ns" not in command
+    assert "--verbose" not in command
     assert "224.0.0.0/4" in command
     assert "ff00::/8" in command
     assert "10.0.0.0/8" in command
     assert "fd20:1234::/48" in command
     assert "auto-hosts" not in rendered
+
+
+def test_sshuttle_verbose_logging_is_explicit(
+    instance: InstancePaths,
+) -> None:
+    data = config_data()
+    data["backend"]["verbose"] = True
+    config = ProjectConfig.model_validate(data)
+
+    assert "--verbose" in sshuttle_arguments(config, instance)
 
 
 def test_sshuttle_target_brackets_ipv6_remote() -> None:
