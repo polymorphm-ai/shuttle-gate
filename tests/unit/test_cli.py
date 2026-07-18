@@ -9,7 +9,7 @@ import yaml
 from typer.testing import CliRunner
 
 import shuttle_gate.cli as cli
-from shuttle_gate.errors import ShuttleGateError
+from shuttle_gate.errors import INSTANCE_ENV, LAUNCHER_ENV, ShuttleGateError
 from shuttle_gate.files import InstancePaths
 
 from .conftest import config_data
@@ -26,6 +26,8 @@ def _select_roots(
     application = application_root or instance_root.with_name(f".{instance_root.name}-application")
     monkeypatch.setenv("SHUTTLE_GATE_ROOT", str(instance_root))
     monkeypatch.setenv("SHUTTLE_GATE_APPLICATION_ROOT", str(application))
+    monkeypatch.setenv(LAUNCHER_ENV, str(application / "shuttle-gate"))
+    monkeypatch.setenv(INSTANCE_ENV, str(instance_root))
 
 
 def _fake_commands(monkeypatch: pytest.MonkeyPatch, fake: FakeRunner) -> None:
@@ -161,6 +163,15 @@ def test_ssh_key_commands_only_generate_locally_and_print_manual_steps(
 
     generated = RUNNER.invoke(cli.app, ["ssh-key", "generate"])
     assert generated.exit_code == 0
+    hint = next(line for line in generated.output.splitlines() if "; run: " in line)
+    assert hint.startswith("manual SSH authorization is required; run: ")
+    assert shlex.split(hint.partition("; run: ")[2]) == [
+        str(instance.root.with_name(f".{instance.root.name}-application") / "shuttle-gate"),
+        "--instance",
+        str(instance.root),
+        "ssh-key",
+        "instructions",
+    ]
     instructions = RUNNER.invoke(cli.app, ["ssh-key", "instructions"])
     assert instructions.exit_code == 0
     assert "ssh-copy-id" in instructions.output

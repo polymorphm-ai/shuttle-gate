@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import ProjectConfig
-from .errors import StateError
+from .errors import StateError, with_command_hint
 from .files import (
     InstancePaths,
     atomic_write_json,
@@ -75,7 +75,9 @@ def prepare_launch(
         identity, known_hosts = validate_ssh_files(config, paths)
         require_current_phone_configs(config, view.paths)
         if view.generation is None:
-            raise StateError("persistent keys are not initialized; run keys generate")
+            raise StateError(
+                with_command_hint("persistent keys are not initialized", "keys", "generate")
+            )
 
         value: dict[str, object] = {
             "schema_version": LAUNCH_SCHEMA_VERSION,
@@ -108,7 +110,7 @@ def read_launch_manifest(launch_path: Path) -> dict[str, Any]:
     except (FileNotFoundError, OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise StateError(f"launch manifest is unavailable: {exc}") from exc
     if not isinstance(value, dict) or value.get("schema_version") != LAUNCH_SCHEMA_VERSION:
-        raise StateError("launch manifest has an unsupported format; run up again")
+        raise StateError(with_command_hint("launch manifest has an unsupported format", "up"))
     return value
 
 
@@ -150,5 +152,7 @@ def validate_launch_manifest(
         "listen_port": config.wireguard.listen_port,
     }
     if any(value.get(key) != item for key, item in expected.items()):
-        raise StateError("configuration or launch inputs changed after prepare; run up again")
+        raise StateError(
+            with_command_hint("configuration or launch inputs changed after prepare", "up")
+        )
     return value

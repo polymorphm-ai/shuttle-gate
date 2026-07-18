@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 
-from .errors import StateError
+from .errors import StateError, with_command_hint
 from .files import InstancePaths, atomic_write_json, ensure_private_directory, fsync_directory
 
 STATE_SCHEMA_VERSION = 1
@@ -143,8 +143,12 @@ def _active_generation(paths: InstancePaths, *, required: bool) -> tuple[Path, s
     except FileNotFoundError:
         if required:
             if _legacy_state_present(paths):
-                raise StateError("legacy key state requires migration; run keys generate") from None
-            raise StateError("persistent keys are not initialized; run keys generate") from None
+                raise StateError(
+                    with_command_hint("legacy key state requires migration", "keys", "generate")
+                ) from None
+            raise StateError(
+                with_command_hint("persistent keys are not initialized", "keys", "generate")
+            ) from None
         return None
     if not stat.S_ISLNK(info.st_mode):
         raise StateError(f"persistent-state pointer must be a symlink: {current}")
@@ -199,7 +203,9 @@ def locked_state_view(
         active = _active_generation(paths, required=required)
         if active is None:
             if _legacy_state_present(paths):
-                raise StateError("legacy key state requires migration; run keys generate")
+                raise StateError(
+                    with_command_hint("legacy key state requires migration", "keys", "generate")
+                )
             yield StateView(paths=paths.with_data(paths.state / CURRENT_LINK), generation=None)
         else:
             root, generation = active

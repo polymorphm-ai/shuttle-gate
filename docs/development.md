@@ -91,6 +91,9 @@ final boundary.
 - Treat every shell, remote-command, or interpreter boundary as a new parser.
   Do not interpolate data into source or depend on ad-hoc quoting. Keep source
   static and pass values as positional arguments or controlled environment.
+- Render actionable diagnostics with the shared command-hint formatter. Do not
+  hand-write `run`, `rerun`, or `inspect` variants; include the selected
+  instance and shell-quote every displayed operand.
 - Validate and bound every file and external input before use. Keep private
   material out of errors, logs, manifests, and test output.
 - Preserve exact bind-address exposure, read-only mounts, native nftables

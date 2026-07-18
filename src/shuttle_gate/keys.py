@@ -16,7 +16,7 @@ from hashlib import sha256
 from pathlib import Path
 
 from .config import PeerConfig, ProjectConfig
-from .errors import StateError
+from .errors import StateError, with_command_hint
 from .files import (
     InstancePaths,
     atomic_write,
@@ -180,7 +180,7 @@ def _load_server_keys(paths: InstancePaths) -> KeyPair:
     """Load complete server state."""
 
     if _key_pair_status(paths.server_dir()) != "complete":
-        raise StateError("server keys are missing; run './shuttle-gate keys generate'")
+        raise StateError(with_command_hint("server keys are missing", "keys", "generate"))
     return KeyPair(
         private=_validate_wireguard_key(
             read_text_secret(paths.server_dir() / PRIVATE_KEY, "server private key"),
@@ -201,7 +201,15 @@ def _load_peer_keys(paths: InstancePaths, name: str) -> tuple[KeyPair, str]:
 
     directory = paths.peer_dir(name)
     if _peer_key_status(directory) != "complete":
-        raise StateError(f"keys for peer {name} are missing")
+        raise StateError(
+            with_command_hint(
+                f"keys for peer {name} are missing",
+                "keys",
+                "generate",
+                "--peer",
+                name,
+            )
+        )
     pair = KeyPair(
         private=_validate_wireguard_key(
             read_text_secret(directory / PRIVATE_KEY, f"{name} private key"),
@@ -298,7 +306,11 @@ def _require_selected_phone_configs(
             actual_config = _read_phone_config(paths, peer.name)
         except (FileNotFoundError, OSError, UnicodeError, json.JSONDecodeError, StateError) as exc:
             raise StateError(
-                f"phone config for {peer.name} is missing or invalid; run phone-config {peer.name}"
+                with_command_hint(
+                    f"phone config for {peer.name} is missing or invalid",
+                    "phone-config",
+                    peer.name,
+                )
             ) from exc
         if (
             not isinstance(value, dict)
@@ -306,7 +318,13 @@ def _require_selected_phone_configs(
             or value.get("fingerprint") != expected_fingerprint
             or actual_config != expected_config
         ):
-            raise StateError(f"phone config for {peer.name} is stale; run phone-config {peer.name}")
+            raise StateError(
+                with_command_hint(
+                    f"phone config for {peer.name} is stale",
+                    "phone-config",
+                    peer.name,
+                )
+            )
 
 
 def require_current_phone_configs(config: ProjectConfig, paths: InstancePaths) -> None:
@@ -823,9 +841,7 @@ def require_no_ssh_key_transaction(config: ProjectConfig, paths: InstancePaths) 
 
     identity, _public = _ssh_key_paths(config, paths)
     if _path_exists(_ssh_transaction_path(identity)):
-        raise StateError(
-            "SSH key update was interrupted; rerun ssh-key generate or config validate"
-        )
+        raise StateError(with_command_hint("SSH key update was interrupted", "config", "validate"))
 
 
 def read_phone_config(paths: InstancePaths, name: str) -> str:
@@ -861,7 +877,11 @@ def ssh_setup_instructions(config: ProjectConfig, paths: InstancePaths) -> str:
             _require_bounded_regular(public, "SSH public key")
         except StateError as exc:
             raise StateError(
-                "SSH public key is missing or invalid; run './shuttle-gate ssh-key generate'"
+                with_command_hint(
+                    "SSH public key is missing or invalid",
+                    "ssh-key",
+                    "generate",
+                )
             ) from exc
         destination = f"{config.ssh.user}@{config.ssh.host}"
         copy_command = shlex.join(

@@ -25,7 +25,14 @@ from typing import Any, NoReturn
 
 from . import __version__
 from .config import IPAddress, ProjectConfig, load_config
-from .errors import ShuttleGateError, StateError
+from .errors import (
+    INSTANCE_ENV,
+    LAUNCHER_ENV,
+    ShuttleGateError,
+    StateError,
+    command_context,
+    with_command_hint,
+)
 from .files import InstancePaths, atomic_write_bytes, ensure_private_directory, fsync_directory
 from .launch import prepare_launch, validate_launch_manifest
 from .state import locked_state_view
@@ -192,7 +199,7 @@ def resolve_instance_root(
     except (OSError, RuntimeError) as exc:
         if requested is None:
             raise HostError(
-                "default instance is not initialized; run './shuttle-gate init'"
+                with_command_hint("default instance is not initialized", "init")
             ) from exc
         raise HostError("instance directory does not exist or cannot be resolved") from exc
     if not str(resolved).isprintable():
@@ -491,6 +498,12 @@ def bubblewrap_command(
             "--setenv",
             "SHUTTLE_GATE_ROOT",
             execution_root,
+            "--setenv",
+            LAUNCHER_ENV,
+            str(application / "shuttle-gate"),
+            "--setenv",
+            INSTANCE_ENV,
+            str(instance_root),
         ]
     )
     if runtime is None:
@@ -728,11 +741,9 @@ def _wait_for_state(paths: RuntimePaths, launch_id: str, timeout: float) -> None
             if status.get("state") == "failed":
                 error = status.get("error")
                 detail = f": {error}" if isinstance(error, str) and error else ""
-                raise HostError(f"gateway startup failed{detail}; inspect './shuttle-gate logs'")
+                raise HostError(with_command_hint(f"gateway startup failed{detail}", "logs"))
         if _host_state(paths) in {"failed", "inactive"}:
-            raise HostError(
-                "gateway service stopped before readiness; inspect './shuttle-gate logs'"
-            )
+            raise HostError(with_command_hint("gateway service stopped before readiness", "logs"))
         time.sleep(READY_POLL_SECONDS)
     _run([_command("systemctl"), "--user", "stop", "--", paths.unit_name])
     raise HostError("gateway did not become ready before the startup timeout")
@@ -899,7 +910,10 @@ def _up(application_root: Path, instance_root: Path, arguments: Sequence[str]) -
             current_digest = hashlib.sha256(_application_bundle(application_root)).hexdigest()
             if manifest.get("application_digest") != current_digest:
                 raise StateError(
-                    "application source differs from the active gateway; run down first"
+                    with_command_hint(
+                        "application source differs from the active gateway",
+                        "down",
+                    )
                 )
             launch_id = manifest.get("launch_id")
             if not isinstance(launch_id, str):
@@ -1146,32 +1160,35 @@ Commands:
 def main(application_root: Path, arguments: Sequence[str] | None = None) -> int:
     """Dispatch the public host command."""
 
-    values = list(sys.argv[1:] if arguments is None else arguments)
-    if not values or values[0] in {"-h", "--help"}:
-        _print_help()
-        return 0
-    if values == ["version"]:
-        print(__version__)
-        return 0
-    instance_root, values = select_instance(application_root, values)
-    if not values or values[0] in {"-h", "--help"}:
-        _print_help()
-        return 0
-    command, rest = values[0], values[1:]
-    if command == "up":
-        return _up(application_root, instance_root, rest)
-    if command == "down":
-        return _down(instance_root, rest)
-    if command == "status":
-        return _status(instance_root, rest)
-    if command == "logs":
-        return _logs(instance_root, rest)
-    if command == "version" and not rest:
-        print(__version__)
-        return 0
-    if command not in OPERATOR_COMMANDS:
-        raise HostError(f"unknown command: {command}; run './shuttle-gate --help'")
-    return _operator(application_root, instance_root, values)
+    launcher = application_root.resolve() / "shuttle-gate"
+    with command_context(launcher, None):
+        values = list(sys.argv[1:] if arguments is None else arguments)
+        if not values or values[0] in {"-h", "--help"}:
+            _print_help()
+            return 0
+        if values == ["version"]:
+            print(__version__)
+            return 0
+        instance_root, values = select_instance(application_root, values)
+        with command_context(launcher, instance_root):
+            if not values or values[0] in {"-h", "--help"}:
+                _print_help()
+                return 0
+            command, rest = values[0], values[1:]
+            if command == "up":
+                return _up(application_root, instance_root, rest)
+            if command == "down":
+                return _down(instance_root, rest)
+            if command == "status":
+                return _status(instance_root, rest)
+            if command == "logs":
+                return _logs(instance_root, rest)
+            if command == "version" and not rest:
+                print(__version__)
+                return 0
+            if command not in OPERATOR_COMMANDS:
+                raise HostError(with_command_hint(f"unknown command: {command}", "--help"))
+            return _operator(application_root, instance_root, values)
 
 
 def entrypoint(application_root: Path) -> None:

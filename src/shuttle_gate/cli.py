@@ -12,7 +12,7 @@ import typer
 
 from . import __version__
 from .config import ProjectConfig, load_config
-from .errors import ShuttleGateError, StateError, TransientRuntimeFailure
+from .errors import ShuttleGateError, StateError, TransientRuntimeFailure, with_command_hint
 from .files import (
     InstancePaths,
     atomic_write,
@@ -184,7 +184,13 @@ def ssh_key_generate(
     paths = instance_paths()
     identity = generate_ssh_key(configuration(paths), paths, SubprocessRunner(), force, request_id)
     typer.echo(f"created {identity} and {identity}.pub")
-    typer.echo("run './shuttle-gate ssh-key instructions' for manual authorization")
+    typer.echo(
+        with_command_hint(
+            "manual SSH authorization is required",
+            "ssh-key",
+            "instructions",
+        )
+    )
 
 
 @ssh_key_app.command("instructions")

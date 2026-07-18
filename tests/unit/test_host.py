@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import pwd
+import shlex
 import shutil
 import socket
 import subprocess
@@ -17,7 +18,7 @@ import pytest
 
 import shuttle_gate.host as host
 from shuttle_gate.config import ProjectConfig
-from shuttle_gate.errors import StateError
+from shuttle_gate.errors import INSTANCE_ENV, LAUNCHER_ENV, StateError
 from shuttle_gate.files import InstancePaths, atomic_write_json, ensure_private_directory
 from shuttle_gate.host import HostError, RuntimePaths
 from shuttle_gate.state import StateView
@@ -279,7 +280,10 @@ def test_namespace_commands_have_fixed_boundaries_and_exposure(
         "--cap-add",
         "CAP_NET_ADMIN",
     ]
-    assert str(instance_root.resolve()) not in gateway
+    gateway_instance_positions = [
+        index for index, value in enumerate(gateway) if value == str(instance_root.resolve())
+    ]
+    assert gateway_instance_positions == [gateway.index(INSTANCE_ENV) + 1]
     assert ["--bind", str(runtime.output), "/run/shuttle-gate/output"] == gateway[
         gateway.index(str(runtime.output)) - 1 : gateway.index(str(runtime.output)) + 2
     ]
@@ -289,6 +293,10 @@ def test_namespace_commands_have_fixed_boundaries_and_exposure(
     assert operator[root_environment + 1] == str(instance_root.resolve())
     python_environment = operator.index("PYTHONPATH")
     assert operator[python_environment + 1] == str(application.resolve() / "src")
+    launcher_environment = operator.index(LAUNCHER_ENV)
+    assert operator[launcher_environment + 1] == str(application.resolve() / "shuttle-gate")
+    instance_environment = operator.index(INSTANCE_ENV)
+    assert operator[instance_environment + 1] == str(instance_root.resolve())
 
     pasta = host.pasta_command(gateway, config)
     assert pasta.count("--udp-ports") == 2
@@ -864,9 +872,18 @@ def test_dispatch_and_entrypoint_error_translation(
     assert capsys.readouterr().out.strip() == "1.0.0"
     assert host.main(application, ["--instance", str(default_instance), "version"]) == 0
     assert capsys.readouterr().out.strip() == "1.0.0"
-    for command in ("runtime", "health", "runtime-status", "unknown"):
+    for command in ("runtime", "health", "runtime-status"):
         with pytest.raises(HostError, match="unknown command"):
             host.main(application, [command])
+    with pytest.raises(HostError, match="unknown command") as unknown:
+        host.main(application, ["--instance", str(default_instance), "unknown"])
+    command = str(unknown.value).partition("; run: ")[2]
+    assert shlex.split(command) == [
+        str(application / "shuttle-gate"),
+        "--instance",
+        str(default_instance),
+        "--help",
+    ]
 
     monkeypatch.setattr(host, "main", lambda _root: (_ for _ in ()).throw(HostError("bad")))
     with pytest.raises(SystemExit) as raised:

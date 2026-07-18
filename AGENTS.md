@@ -34,6 +34,9 @@ allowlist options, and put validated operands after `--` or another documented
 boundary. Treat every interpreter boundary as a new parser: keep source static
 and pass data as arguments or controlled environment values. Never use dynamic
 data with `shell=True`.
+Render actionable CLI messages through the shared command-hint helper; do not
+hand-write command prose. Hints must include the active instance and remain safe
+to paste when paths contain shell metacharacters.
 
 Design multi-step changes for interruption anywhere. Prefer atomic primitives;
 otherwise make steps idempotent, retry-safe, crash-consistent, and convergent.
