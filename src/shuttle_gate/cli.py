@@ -28,7 +28,7 @@ from .keys import (
     prune_orphaned_peers,
     read_phone_config,
     recover_ssh_key_transaction,
-    render_all_phone_configs,
+    regenerate_phone_config,
     require_no_ssh_key_transaction,
     rotate_peer,
     rotate_server,
@@ -205,7 +205,7 @@ def phone_config(
     config = configuration(paths)
     if name not in {peer.name for peer in config.wireguard.peers}:
         abort(f"peer is not declared in config.yaml: {name}")
-    render_all_phone_configs(config, paths)
+    regenerate_phone_config(config, paths, name)
     rendered = read_phone_config(paths, name)
     source = paths.peer_dir(name) / PHONE_CONFIG
     if stdout:

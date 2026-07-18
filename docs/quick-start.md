@@ -75,7 +75,10 @@ An existing dedicated key may instead be placed at its configured path under
 
 Repeated generation preserves existing keys. Each peer receives separate key
 material and a configuration under `state/current/peers/NAME/`. `current` is an
-atomic pointer to a complete generation; never edit below it.
+atomic pointer to a crash-consistent generation; never edit below it.
+`phone-config NAME` regenerates only that peer's derived configuration. Other
+peer files remain unchanged, even if they are missing or stale. Startup checks
+that every declared peer is complete and current.
 
 `phone-config --output exports/FILE` writes an atomic mode-`0600` copy below
 the private, ignored `exports/` directory. Only one direct `exports/FILE`

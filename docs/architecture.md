@@ -71,7 +71,10 @@ WireGuard keys, peer configurations, fingerprints, and operation receipts live
 in immutable directories under `state/generations/`. A writer constructs and
 validates a private staging generation, fsyncs it, renames it, then atomically
 replaces `state/current`. An instance `flock` serializes writers. Readers hold a
-shared lock while using the resolved generation.
+shared lock while using the resolved generation. A generation is structurally
+complete but may represent partial provisioning: selected-peer commands change
+only their named peer. Startup separately requires every declared peer key and
+phone configuration to be complete and current.
 
 Non-idempotent rotations publish an operation-ID receipt with their result, so
 a retry cannot rotate twice. SSH identity replacement uses a durable journal

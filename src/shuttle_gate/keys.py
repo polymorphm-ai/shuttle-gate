@@ -137,7 +137,7 @@ def _generate_missing_keys(
             atomic_write(directory / PRESHARED_KEY, preshared + "\n", 0o600)
             created.append(peer.name)
 
-    _render_all_phone_configs(config, paths)
+    _render_phone_configs(config, paths, config.wireguard.peers)
     return created
 
 
@@ -220,14 +220,30 @@ def load_peer_keys(paths: InstancePaths, name: str) -> tuple[KeyPair, str]:
     return read_state(paths, lambda snapshot: _load_peer_keys(snapshot, name))
 
 
-def _render_all_phone_configs(config: ProjectConfig, paths: InstancePaths) -> None:
-    """Render every declared peer config inside a staged generation."""
+def _phone_artifacts(
+    config: ProjectConfig,
+    paths: InstancePaths,
+    peer: PeerConfig,
+    server: KeyPair,
+) -> tuple[str, str]:
+    """Render one peer config and its expected import fingerprint."""
+
+    pair, preshared = _load_peer_keys(paths, peer.name)
+    rendered = render_phone_config(config, peer, server.public, pair.private, preshared)
+    fingerprint = phone_fingerprint(config, peer, server.public, pair.public, preshared)
+    return rendered, fingerprint
+
+
+def _render_phone_configs(
+    config: ProjectConfig,
+    paths: InstancePaths,
+    peers: tuple[PeerConfig, ...],
+) -> None:
+    """Render exactly the selected peer configs inside a staged generation."""
 
     server = _load_server_keys(paths)
-    for peer in config.wireguard.peers:
-        pair, preshared = _load_peer_keys(paths, peer.name)
-        rendered = render_phone_config(config, peer, server.public, pair.private, preshared)
-        fingerprint = phone_fingerprint(config, peer, server.public, pair.public, preshared)
+    for peer in peers:
+        rendered, fingerprint = _phone_artifacts(config, paths, peer, server)
         atomic_write(paths.peer_dir(peer.name) / PHONE_CONFIG, rendered, 0o600)
         atomic_write_json(
             paths.peer_dir(peer.name) / FINGERPRINT,
@@ -236,32 +252,58 @@ def _render_all_phone_configs(config: ProjectConfig, paths: InstancePaths) -> No
         )
 
 
-def render_all_phone_configs(config: ProjectConfig, paths: InstancePaths) -> None:
-    """Atomically regenerate every phone configuration and fingerprint."""
+def regenerate_phone_config(config: ProjectConfig, paths: InstancePaths, name: str) -> None:
+    """Atomically regenerate only the requested peer configuration."""
+
+    selected = _selected_peers(config, name)
 
     def render(snapshot: InstancePaths) -> None:
-        _render_all_phone_configs(config, snapshot)
+        _render_phone_configs(config, snapshot, selected)
 
-    mutate_state(paths, render, lambda snapshot: _validate_snapshot(config, snapshot))
+    mutate_state(
+        paths,
+        render,
+        lambda snapshot: _validate_phone_snapshot(config, snapshot, selected),
+    )
 
 
 def _require_current_phone_configs(config: ProjectConfig, paths: InstancePaths) -> None:
     """Reject missing or stale phone configurations in one generation."""
 
+    _require_selected_phone_configs(config, paths, config.wireguard.peers)
+
+
+def _require_selected_phone_configs(
+    config: ProjectConfig,
+    paths: InstancePaths,
+    peers: tuple[PeerConfig, ...],
+) -> None:
+    """Require exact current artifacts for the selected peers."""
+
     server = _load_server_keys(paths)
-    for peer in config.wireguard.peers:
-        pair, preshared = _load_peer_keys(paths, peer.name)
-        expected = phone_fingerprint(config, peer, server.public, pair.public, preshared)
+    for peer in peers:
+        expected_config, expected_fingerprint = _phone_artifacts(config, paths, peer, server)
         path = paths.peer_dir(peer.name) / FINGERPRINT
         try:
-            if path.stat().st_size > 64 * 1024:
+            info = path.stat(follow_symlinks=False)
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or stat.S_IMODE(info.st_mode) & 0o077
+                or info.st_size > 64 * 1024
+            ):
                 raise StateError(f"phone config fingerprint for {peer.name} is unexpectedly large")
             value = json.loads(path.read_text(encoding="utf-8"))
-        except (FileNotFoundError, OSError, json.JSONDecodeError) as exc:
+            actual_config = _read_phone_config(paths, peer.name)
+        except (FileNotFoundError, OSError, json.JSONDecodeError, StateError) as exc:
             raise StateError(
                 f"phone config for {peer.name} is missing; run phone-config {peer.name}"
             ) from exc
-        if not isinstance(value, dict) or value.get("fingerprint") != expected:
+        if (
+            not isinstance(value, dict)
+            or value.get("schema_version") != 1
+            or value.get("fingerprint") != expected_fingerprint
+            or actual_config != expected_config
+        ):
             raise StateError(f"phone config for {peer.name} is stale; run phone-config {peer.name}")
 
 
@@ -276,6 +318,19 @@ def _validate_snapshot(config: ProjectConfig, paths: InstancePaths) -> None:
     for peer in config.wireguard.peers:
         _load_peer_keys(paths, peer.name)
     _require_current_phone_configs(config, paths)
+
+
+def _validate_phone_snapshot(
+    config: ProjectConfig,
+    paths: InstancePaths,
+    selected: tuple[PeerConfig, ...],
+) -> None:
+    """Validate all keys and only the phone configs this operation changed."""
+
+    _load_server_keys(paths)
+    for peer in config.wireguard.peers:
+        _load_peer_keys(paths, peer.name)
+    _require_selected_phone_configs(config, paths, selected)
 
 
 def rotate_peer(
@@ -295,7 +350,7 @@ def rotate_peer(
         atomic_write(directory / PUBLIC_KEY, pair.public + "\n", 0o644)
         atomic_write(directory / PRESHARED_KEY, preshared + "\n", 0o600)
         atomic_write(directory / PRIVATE_KEY, pair.private + "\n", 0o600)
-        _render_all_phone_configs(config, snapshot)
+        _render_phone_configs(config, snapshot, config.wireguard.peers)
 
     mutate_state(
         paths,
@@ -317,7 +372,7 @@ def rotate_server(
         pair = _generate_key_pair(runner)
         atomic_write(snapshot.server_dir() / PUBLIC_KEY, pair.public + "\n", 0o644)
         atomic_write(snapshot.server_dir() / PRIVATE_KEY, pair.private + "\n", 0o600)
-        _render_all_phone_configs(config, snapshot)
+        _render_phone_configs(config, snapshot, config.wireguard.peers)
 
     mutate_state(
         paths,
@@ -755,17 +810,24 @@ def require_no_ssh_key_transaction(config: ProjectConfig, paths: InstancePaths) 
 def read_phone_config(paths: InstancePaths, name: str) -> str:
     """Read one bounded phone configuration from a stable generation."""
 
-    def read(snapshot: InstancePaths) -> str:
-        path = snapshot.peer_dir(name) / PHONE_CONFIG
-        try:
-            info = path.stat(follow_symlinks=False)
-            if not stat.S_ISREG(info.st_mode) or info.st_size > 64 * 1024:
-                raise StateError(f"invalid phone configuration: {path}")
-            return path.read_text(encoding="utf-8")
-        except (FileNotFoundError, OSError, UnicodeError) as exc:
-            raise StateError(f"cannot read phone configuration for {name}: {exc}") from exc
+    return read_state(paths, lambda snapshot: _read_phone_config(snapshot, name))
 
-    return read_state(paths, read)
+
+def _read_phone_config(paths: InstancePaths, name: str) -> str:
+    """Read one private phone configuration from an already locked snapshot."""
+
+    path = paths.peer_dir(name) / PHONE_CONFIG
+    try:
+        info = path.stat(follow_symlinks=False)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or stat.S_IMODE(info.st_mode) & 0o077
+            or info.st_size > 64 * 1024
+        ):
+            raise StateError(f"invalid phone configuration: {path}")
+        return path.read_text(encoding="utf-8")
+    except (FileNotFoundError, OSError, UnicodeError) as exc:
+        raise StateError(f"cannot read phone configuration for {name}: {exc}") from exc
 
 
 def ssh_setup_instructions(config: ProjectConfig, paths: InstancePaths) -> str:

@@ -19,6 +19,7 @@ from shuttle_gate.keys import (
     load_server_keys,
     peer_rows,
     prune_orphaned_peers,
+    regenerate_phone_config,
     require_current_phone_configs,
     rotate_peer,
     rotate_server,
@@ -88,6 +89,24 @@ def test_stale_fingerprint_is_rejected(config: ProjectConfig, instance: Instance
 
     with pytest.raises(StateError, match="stale"):
         require_current_phone_configs(config, instance)
+
+
+def test_regenerating_one_phone_config_does_not_repair_another(
+    config: ProjectConfig,
+    instance: InstancePaths,
+) -> None:
+    generate_missing_keys(config, instance, FakeRunner())
+    (instance.peer_dir("phone") / PHONE_CONFIG).unlink()
+
+    regenerate_phone_config(config, instance, "tablet")
+
+    assert not (instance.peer_dir("phone") / PHONE_CONFIG).exists()
+    assert (instance.peer_dir("tablet") / PHONE_CONFIG).is_file()
+    with pytest.raises(StateError, match="phone config for phone is missing"):
+        require_current_phone_configs(config, instance)
+
+    regenerate_phone_config(config, instance, "phone")
+    require_current_phone_configs(config, instance)
 
 
 def test_peer_and_server_rotation_replace_public_material(
@@ -204,7 +223,7 @@ def test_loaders_and_fingerprint_require_complete_private_state(
         load_peer_keys(instance, "phone")
 
     generate_missing_keys(config, instance, FakeRunner())
-    (instance.peer_dir("phone") / FINGERPRINT).unlink()
+    (instance.peer_dir("phone") / PHONE_CONFIG).unlink()
     with pytest.raises(StateError, match="phone config for phone is missing"):
         require_current_phone_configs(config, instance)
 
